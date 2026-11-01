@@ -168,7 +168,6 @@ add_executable(yuzu
     install_dialog.h
     loading_screen.cpp
     loading_screen.h
-    loading_screen.ui
 
     main.cpp
 
