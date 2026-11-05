@@ -2109,8 +2109,43 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
 
         case 0x243:
-            if (insn.Bits(24, 8) != 255 || (insn.words[1] & ~0xffU) ||
-                insn.words[2] != 0x0000c4ffU)
+            // F2IP.U8.F32 Rd, Ra, Rb, Rc (as PTX cvt.pack.u8): byte(Ra) << 8 | byte(Rb) | Rc << 16,
+            // each float NaN-cleared, clamped to [0, 255] and converted with the rounding in bits
+            // 78-79. The truncating single-byte form (Ra = Rc = RZ) falls through to F2I below.
+            if (!(insn.Bits(24, 8) == 255 && insn.words[2] == 0x0000c4ffU)) {
+                const u32 high_src = insn.Bits(24, 8), low_src = insn.Bits(32, 8), merge = insn.Bits(64, 8);
+                const auto bad = [](u32 reg) { return reg != 255 && reg >= 246; };
+                if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0xc0ffU) != 0x0400U ||
+                    bad(high_src) || bad(low_src) || bad(merge))
+                    return fail(index, "native packed float-to-byte mode");
+                const u32 rounding = insn.Bits(78, 2);
+                // R250: clamped float, R252: constants; results in R251 (low) and R253 (high).
+                const auto to_byte = [&](u32 source, u32 out) {
+                    if (source == 255) { mov_imm(out, 0); return; }
+                    emit(0x5800000000000000ULL | predicate | 250 | (u64{source} << 8) |
+                         (u64{source} << 20) | (u64{7} << 39) | (u64{7} << 48));
+                    emit(0x5c40000000000000ULL | predicate | 250 | (u64{source} << 8) |
+                         (u64{250} << 20) | (u64{7} << 48));
+                    mov_imm(252, 0);
+                    emit(0x5c60000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                         (u64{252} << 20) | (u64{15} << 39));
+                    mov_imm(252, 0x437f0000U);
+                    emit(0x5c60000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                         (u64{252} << 20) | (u64{7} << 39));
+                    emit(0x5cb0000000000000ULL | predicate | out | (u64{2} << 8) | (u64{2} << 10) |
+                         (u64{250} << 20) | (u64{rounding} << 39));
+                };
+                to_byte(low_src, 251);
+                to_byte(high_src, 253);
+                emit(0x5c18000000000000ULL | predicate | 251 | (u64{253} << 8) | (u64{251} << 20) |
+                     (u64{8} << 39));
+                if (merge != 255)
+                    emit(0x5c18000000000000ULL | predicate | 251 | (u64{merge} << 8) |
+                         (u64{251} << 20) | (u64{16} << 39));
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{251} << 20));
+                break;
+            }
+            if ((insn.words[1] & ~0xffU))
                 return fail(index, "native packed float-to-byte mode");
             insn.words[0] &= 0x00ffffffU;
             insn.words[2] = 0x0021e000U;
