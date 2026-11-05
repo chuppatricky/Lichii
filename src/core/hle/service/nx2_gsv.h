@@ -3153,9 +3153,11 @@ private:
             Tegra::Texture::SwizzleTexture(m_tiled, bytes, 4, static_cast<u32>(layout.pitch / 4),
                                            layout.height, 1, 4, 0, 1, true);
             memory.WriteBlock(address, m_tiled.data(), m_tiled.size());
+            // preserve_gpu_writes: GPU-written bytes on these pages are handled on the GPU thread
+            // (as CPU writes through core/memory.cpp are), never from this service thread.
             if (const auto device =
                     Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
-                system.GPU().InvalidateRegion(*device, m_tiled.size());
+                system.GPU().InvalidateRegion(*device, m_tiled.size(), true);
             }
             trace_write();
             return {width, height};
@@ -3169,8 +3171,9 @@ private:
                               layout.pitch * ((height + 1) / 2));
         }
         // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
+        // preserve_gpu_writes: GPU-written bytes on these pages are handled on the GPU thread.
         if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
-            system.GPU().InvalidateRegion(*device, layout.size);
+            system.GPU().InvalidateRegion(*device, layout.size, true);
         }
         trace_write();
         return {width, height};
