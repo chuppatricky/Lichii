@@ -167,7 +167,10 @@ void Fsr3FrameGen::CreateResources(const Device& device) {
     m_history_view = CreateWrappedImageView(device, m_history_image, m_format);
 
     // Current-frame copy for interpolation shader
-    m_current_image = CreateWrappedImage(m_allocator, m_extent, m_format);
+    // Copied into m_history_image every frame, so it must be a transfer source too (AMD drivers
+    // pick the image's compression from its usage flags).
+    m_current_image =
+        CreateWrappedImage(m_allocator, m_extent, m_format, VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     m_current_view = CreateWrappedImageView(device, m_current_image, m_format);
 
     // Half-resolution motion vector image
