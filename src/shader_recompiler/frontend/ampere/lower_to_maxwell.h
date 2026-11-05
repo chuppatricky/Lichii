@@ -1140,7 +1140,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 target = uniform_register(uniform_dest);
             const u32 index_target = opcode == 0xabb ? uniform_register(index_reg) : 255U;
             if (target == ~0U || target == 255 || (!subword_load && width != 4 && width != 5) ||
-                (subword_load && offset >= 0x8000) ||
+                // Indexed loads take a signed offset (c[0x4][UR15 - 1]), as Maxwell LDC does.
+                (subword_load && opcode == 0xab9 && offset >= 0x8000) ||
                 (width == 5 && ((uniform_dest & 1) || uniform_register(uniform_dest + 1) != target + 1)) ||
                 bank() >= 18 || offset % alignment || insn.Bits(62, 2) ||
                 (insn.words[2] & ~0xe00U) != (opcode == 0xab9 ? 0U : 0x08000000U) ||
