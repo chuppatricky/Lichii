@@ -3766,11 +3766,29 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 emit(0xe24000000000000fULL | predicate);
                 break;
             }
-            const bool adjacent = index != 0 &&
-                (code[index - 1].words[0] & ~0x00ff0000U) == 0x00007802 &&
-                code[index - 1].Bits(16, 8) < 250 &&
-                code[index - 1].words[1] == (index + 1) * 16 &&
-                code[index - 1].words[2] == 0xf00;
+            // The return PC is set by MOV Rlink, (index + 1) * 16 right before the call, or a few
+            // instructions earlier with nothing in between that branches or writes Rlink
+            // (Ocarina's Max Resolution compute: MOV R18, ...; P2R R16, ...; CALL).
+            std::optional<u32> nearby_link;
+            for (u32 back = 1; back <= 4 && back <= index && !nearby_link; ++back) {
+                const Instruction& setup = code[index - back];
+                if ((setup.words[0] & ~0x00ff0000U) == 0x00007802 && setup.Bits(16, 8) < 250 &&
+                    setup.words[1] == (index + 1) * 16 && setup.words[2] == 0xf00) {
+                    const u32 link_reg = setup.Bits(16, 8);
+                    bool clean = true;
+                    for (u32 between = index - back + 1; between < index && clean; ++between) {
+                        const Instruction& other = code[between];
+                        const u32 op = other.Bits(0, 12);
+                        const u32 first = other.Bits(16, 8), count = write_count(other).value_or(1);
+                        clean = op != 0x947 && op != 0x944 && op != 0x950 && op != 0x94d &&
+                                op != 0x949 && op != 0x958 && op != 0x918 &&
+                                !(first <= link_reg && link_reg < first + count);
+                    }
+                    if (clean) nearby_link = link_reg;
+                    break;
+                }
+            }
+            const bool adjacent = nearby_link.has_value();
             if (index == 0 || insn.words[0] != 0x7944 ||
                 (insn.words[2] & ~0x3ffffU) != 0x03c00000 || (!adjacent && !bounded_control))
                 return fail(index, "native call linkage mode");
@@ -3778,7 +3796,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native call destination alignment");
-            const u32 link = adjacent ? code[index - 1].Bits(16, 8) : bounded_links[index];
+            const u32 link = adjacent ? *nearby_link : bounded_links[index];
             for (size_t call = 0; call < call_targets.size(); ++call) {
                 if (call_targets[call] == target / 16 && call_links[call] != link)
                     return fail(index, "native inconsistent call linkage");
