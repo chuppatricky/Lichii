@@ -1143,7 +1143,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 // Indexed loads take a signed offset (c[0x4][UR15 - 1]), as Maxwell LDC does.
                 (subword_load && opcode == 0xab9 && offset >= 0x8000) ||
                 (width == 5 && ((uniform_dest & 1) || uniform_register(uniform_dest + 1) != target + 1)) ||
-                bank() >= 18 || offset % alignment || insn.Bits(62, 2) ||
+                // Indexed loads check only the sum's alignment at run time: the constant part can
+                // be odd when the index supplies the rest (Ocarina: ULDC UR7, c[0x4][UR15 + 0x29]).
+                bank() >= 18 || (opcode == 0xab9 && offset % alignment) || insn.Bits(62, 2) ||
                 (insn.words[2] & ~0xe00U) != (opcode == 0xab9 ? 0U : 0x08000000U) ||
                 index_target == ~0U)
                 return fail(index, "native uniform constant load mode");
@@ -3250,9 +3252,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                      (u64{insn.Bits(60, 2) * 2} << 41));
                 break;
             }
-            // I2F.{U,S}8 Rd, Rs.B0-B3: the byte selector (bits 60-61) as Maxwell's (41-42).
+            // I2F.{U,S}8 Rd, Rs.B0-B3: the byte selector (bits 60-61) as Maxwell's (41-42), for a
+            // register or a uniform source (Ocarina: I2F.U8 R9, UR17.B3).
             if ((insn.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
-                (insn.words[1] & (opcode == 0xd06 ? 0xffffff00U : 0xcfffff00U)) || source == ~0U)
+                (insn.words[1] & 0xcfffff00U) || source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
             emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (is_signed << 13) | (u64{source} << 20) |
                  (u64{insn.Bits(60, 2)} << 41));
