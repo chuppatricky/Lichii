@@ -2520,7 +2520,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     return fail(index, "native per-tap gather operands");
                 // Offsets proven constant go to the host as one gather with ConstOffsets. Others
                 // (branching programs, computed offsets) become four gathers, each with one
-                // runtime offset, keeping component i of gather i: the per-tap gather's definition.
+                // runtime offset. Tap i is texel i0j0 (component w) of the footprint at offset i:
+                // the per-tap gather's definition (GLSL textureGatherOffsets, Mesa's lowering).
                 const auto prove_constant_offsets = [&]() -> bool {
                     // The backward scan below is only sound for straight-line programs: every
                     // instruction up to the terminal EXIT must be one of these non-branching forms.
@@ -2600,6 +2601,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (emulate_per_tap) {
                 // Coordinates to 246, 247 (the results land in 250-253). Taps 0 and 1 take their
                 // packed x, y bytes from Rb, taps 2 and 3 from Rb+1; AOFFI reads bits 0-5 and 8-13.
+                // Mask 8 keeps only component w (i0j0) of each gather, written to 250 + tap.
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{250} << 20));
                 emit(0x5c98000000000000ULL | predicate | 247 | (u64{15} << 39) | (u64{251} << 20));
                 for (u32 tap = 0; tap < 4; ++tap) {
@@ -2609,7 +2611,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     else
                         emit(0x3828000000000000ULL | predicate | 248 | (u64{packed} << 8) | (u64{16} << 20));
                     emit(0xc800000000000000ULL | predicate | (250 + tap) | (u64{246} << 8) |
-                         (u64{248} << 20) | (u64{2} << 28) | (u64{1U << tap} << 31) |
+                         (u64{248} << 20) | (u64{2} << 28) | (u64{8} << 31) |
                          (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
                          (u64{1} << 54) | (u64{insn.Bits(87, 2)} << 56));
                 }

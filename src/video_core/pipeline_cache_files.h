@@ -14,7 +14,10 @@
 namespace VideoCommon {
 
 inline constexpr u32 OpenGLPipelineCacheVersion = 46;
-inline constexpr u32 VulkanPipelineCacheVersion = 50;
+// 5001: local build. The cache stores lowered native code, and the per-tap gather lowering
+// changed, so v50 entries (written with the old lowering) must not be reused. A number
+// far from upstream's keeps this cache apart from other Lichii builds' files.
+inline constexpr u32 VulkanPipelineCacheVersion = 5001;
 
 // Official Eglantine (cache version 18 at c0cb3325) and this fork (a different version) both
 // used <shader dir>/<title>/vulkan.bin and vulkan_pipelines.bin. Each build deletes a file
