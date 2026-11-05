@@ -31,6 +31,7 @@
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/renderer_vulkan/pipeline_compile_log.h"
 #include "common/settings.h"
 #include "video_core/nx2_profile.h"
 
@@ -1239,6 +1240,16 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
 
+    std::string compile_shaders;
+    if (LogPipelineCompiles()) {
+        for (size_t stage = 0; stage < key.unique_hashes.size(); ++stage) {
+            if (key.unique_hashes[stage] != 0) {
+                compile_shaders += fmt::format("{}s{}:{:016x}", compile_shaders.empty() ? "" : " ",
+                                               stage, key.unique_hashes[stage]);
+            }
+        }
+    }
+    const PipelineCompileLog compile_log{"graphics", std::move(compile_shaders)};
     pipeline = device.GetLogical().CreateGraphicsPipeline({
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
