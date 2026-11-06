@@ -25,6 +25,7 @@
 #include "common/scope_exit.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
+#include "common/memory_detect.h"
 #include "common/thread_worker.h"
 #include "core/core.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -800,6 +801,25 @@ bool PreloadAllPipelines() {
     }();
     return all;
 }
+
+// How many graphics pipelines stay built before long-unused ones are destroyed. Ocarina of Time
+// uses about 3,000 in all, so with 24 GB of RAM or more none of its are evicted. On RADV (RX 7900
+// GRE) destroying 2,490 of them did not lower the process's memory use, so the budget for PCs
+// with less RAM is a precaution for drivers that hold more per pipeline.
+// EDEN_NX2_PIPELINE_KEEP=<count> sets it; 0 evicts every pipeline unused for 9000 frames.
+size_t PipelinesKept() {
+    static const size_t keep = [] {
+        if (const char* value = std::getenv("EDEN_NX2_PIPELINE_KEEP"); value && *value) {
+            return static_cast<size_t>(std::strtoull(value, nullptr, 10));
+        }
+        constexpr u64 GiB = 1ULL << 30;
+        const size_t kept =
+            Common::GetMemInfo().TotalPhysicalMemory >= 23 * GiB ? size_t{4096} : size_t{2048};
+        LOG_INFO(Render_Vulkan, "Keeping up to {} graphics pipelines built", kept);
+        return kept;
+    }();
+    return keep;
+}
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
@@ -1536,39 +1556,51 @@ void PipelineCache::EvictUnusedPipelines() {
         return;
     }
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
-    // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
-    // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
+    // with every place a session went (title 1: 1,500 on its title screen alone). Past a budget,
+    // the ones unused longest (and for at least this long) are destroyed. Building one again
+    // translates its shaders on the GPU thread (5 ms typical, up to 30 ms on an RX 7900 GRE),
+    // so evicting every unused one stuttered: Ocarina of Time lost 1,800 of the pipelines built
+    // at boot 4 minutes in and rebuilt hundreds mid-game when the player went back.
     constexpr u64 EvictAfterFrames = 9000;
-    if (frame_count <= EvictAfterFrames) {
+    const size_t keep = PipelinesKept();
+    if (frame_count <= EvictAfterFrames || graphics_cache.size() <= keep) {
         return;
     }
     const u64 cutoff = frame_count - EvictAfterFrames;
-    const u64 tick = scheduler.CurrentTick();
-    size_t evicted = 0;
-    for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
-        GraphicsPipeline* const pipeline = it->second.get();
-        if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
-            pipeline->LastUse() >= cutoff) {
-            ++it;
-            continue;
+    std::vector<std::pair<u64, GraphicsPipelineCacheKey>> candidates;
+    for (const auto& [key, pipeline] : graphics_cache) {
+        if (pipeline != nullptr && pipeline.get() != current_pipeline && pipeline->IsBuilt() &&
+            pipeline->LastUse() < cutoff) {
+            candidates.emplace_back(pipeline->LastUse(), key);
         }
+    }
+    const size_t excess = graphics_cache.size() - keep;
+    if (candidates.size() > excess) {
+        std::ranges::nth_element(candidates, candidates.begin() + excess, std::less{},
+                                 [](const auto& candidate) { return candidate.first; });
+        candidates.erase(candidates.begin() + excess, candidates.end());
+    }
+    if (candidates.empty()) {
+        return;
+    }
+    const u64 tick = scheduler.CurrentTick();
+    for (const auto& [last_use, key] : candidates) {
+        const auto it = graphics_cache.find(key);
+        GraphicsPipeline* const pipeline = it->second.get();
         if (used_this_session.erase(pipeline) != 0) {
             used_and_evicted.insert(it->first.Hash());
         }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
-        it = graphics_cache.erase(it);
-        ++evicted;
-    }
-    if (evicted == 0) {
-        return;
+        graphics_cache.erase(it);
     }
     for (auto& [key, pipeline] : graphics_cache) {
         if (pipeline) {
             pipeline->ClearTransitions();
         }
     }
-    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
-             EvictAfterFrames, graphics_cache.size());
+    LOG_INFO(Render_Vulkan,
+             "Evicted {} graphics pipelines unused for {} frames, {} left (budget {})",
+             candidates.size(), EvictAfterFrames, graphics_cache.size(), keep);
 }
 
 std::unique_ptr<GraphicsPipeline> PipelineCache::TakeBackgroundPipeline(
