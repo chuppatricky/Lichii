@@ -15,14 +15,15 @@ namespace Shader::Optimization {
 
 /// Ocarina of Time's outdoor fog (EDEN_NX2_OOT_FOG).
 enum class OotFog {
-    On,      ///< The game's fog as emulated, no shader edits
-    Reduced, ///< Fog slices 1/4 as thick and exposure 0.65 (the haze workaround)
-    Off,     ///< No fog (zero-thickness slices) and exposure 0.65
+    On,       ///< The game's fog as emulated and exposure 0.65
+    Reduced,  ///< Fog slices 1/4 as thick and exposure 0.65 (the haze workaround)
+    Off,      ///< No fog (zero-thickness slices) and exposure 0.65
+    Original, ///< No shader edits: the game's fog and the emulator's brighter exposure
 };
 
-/// EDEN_NX2_OOT_FOG=on|reduced|off. Without it, EDEN_NX2_OOT_VISUAL_WORKAROUND=1 means reduced.
-/// EDEN_NX2_OOT_VISUAL_WORKAROUND=0 (older builds' opt-out, which users may still have in their
-/// own nx2_switches.txt) keeps the full fog over a shipped EDEN_NX2_OOT_FOG=reduced default.
+/// EDEN_NX2_OOT_FOG=on|reduced|off|original. Without it, EDEN_NX2_OOT_VISUAL_WORKAROUND=1 means
+/// reduced. EDEN_NX2_OOT_VISUAL_WORKAROUND=0 (older builds' opt-out, which users may still have in
+/// their own nx2_switches.txt) means original over a shipped EDEN_NX2_OOT_FOG=reduced default.
 [[nodiscard]] inline OotFog ParseOotFog(const char* fog, const char* legacy) {
     const std::string_view legacy_value = legacy != nullptr ? legacy : "";
     std::optional<OotFog> mode;
@@ -34,13 +35,15 @@ enum class OotFog {
             mode = OotFog::Reduced;
         } else if (value == "off") {
             mode = OotFog::Off;
+        } else if (value == "original") {
+            mode = OotFog::Original;
         }
     }
     if (!mode) {
-        return legacy_value == "1" ? OotFog::Reduced : OotFog::On;
+        return legacy_value == "1" ? OotFog::Reduced : OotFog::Original;
     }
     if (*mode == OotFog::Reduced && legacy_value == "0") {
-        return OotFog::On;
+        return OotFog::Original;
     }
     return *mode;
 }
@@ -53,10 +56,11 @@ enum class OotFog {
 // TEMPORARY visual workaround for Ocarina of Time, not an emulator fix.
 inline std::optional<size_t> ApplyOotVisualWorkaround(IR::Program& program, u64 title_id,
                                                      u64 shader_hash, OotFog mode) {
-    if (mode == OotFog::On || title_id != 0x0400486024DEC000ULL) {
+    if (mode == OotFog::Original || title_id != 0x0400486024DEC000ULL) {
         return std::nullopt;
     }
-    const bool fog = shader_hash == 0x780c0536b89fc89eULL && program.stage == Stage::Compute;
+    const bool fog = mode != OotFog::On && shader_hash == 0x780c0536b89fc89eULL &&
+                     program.stage == Stage::Compute;
     const bool exposure = shader_hash == 0xbded5ce917183214ULL && program.stage == Stage::Fragment;
     if (!fog && !exposure) {
         return std::nullopt;

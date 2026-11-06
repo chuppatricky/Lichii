@@ -89,12 +89,12 @@ TEST_CASE("OoT fog matches the native sign-bit negate without touching other bit
     REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, Shader::Optimization::OotFog::Reduced) == 1);
 }
 
-TEST_CASE("OoT visual workaround is off with fog on and rejects unknown titles stages and programs",
+TEST_CASE("OoT visual workaround is off in original mode and rejects unknown titles stages and programs",
           "[video_core][oot_visual_workaround]") {
     Fixture f;
     f.program.stage = Shader::Stage::Fragment;
     const auto exposure = f.ir.GetFloatCbuf(f.ir.Imm32(3U), f.ir.Imm32(0x38U));
-    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, Shader::Optimization::OotFog::On));
+    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, Shader::Optimization::OotFog::Original));
     CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title + 1, Final, Shader::Optimization::OotFog::Reduced));
     CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(
         f.program, Title, 0x6cb06edf14be1d79ULL, Shader::Optimization::OotFog::Reduced));
@@ -143,20 +143,45 @@ TEST_CASE("OoT fog off zeroes the slice distance and keeps the exposure change",
     }
 }
 
-TEST_CASE("OoT fog switch reads on, reduced and off and honors the older opt-out",
+TEST_CASE("OoT fog switch reads on, reduced, off and original and honors the older opt-out",
           "[video_core][oot_visual_workaround]") {
     using Shader::Optimization::OotFog;
     using Shader::Optimization::ParseOotFog;
-    CHECK(ParseOotFog(nullptr, nullptr) == OotFog::On);
+    CHECK(ParseOotFog(nullptr, nullptr) == OotFog::Original);
     CHECK(ParseOotFog(nullptr, "1") == OotFog::Reduced);
-    CHECK(ParseOotFog(nullptr, "0") == OotFog::On);
+    CHECK(ParseOotFog(nullptr, "0") == OotFog::Original);
     CHECK(ParseOotFog("on", nullptr) == OotFog::On);
     CHECK(ParseOotFog("reduced", nullptr) == OotFog::Reduced);
     CHECK(ParseOotFog("off", nullptr) == OotFog::Off);
     CHECK(ParseOotFog("off", "1") == OotFog::Off);
     CHECK(ParseOotFog("on", "1") == OotFog::On);
-    CHECK(ParseOotFog("reduced", "0") == OotFog::On);
+    CHECK(ParseOotFog("reduced", "0") == OotFog::Original);
+    CHECK(ParseOotFog("original", nullptr) == OotFog::Original);
+    CHECK(ParseOotFog("original", "1") == OotFog::Original);
+    CHECK(ParseOotFog("on", "0") == OotFog::On);
     CHECK(ParseOotFog("off", "0") == OotFog::Off);
     CHECK(ParseOotFog("bogus", "1") == OotFog::Reduced);
-    CHECK(ParseOotFog("bogus", nullptr) == OotFog::On);
+    CHECK(ParseOotFog("bogus", nullptr) == OotFog::Original);
+}
+
+TEST_CASE("OoT fog on keeps the full fog and the exposure correction",
+          "[video_core][oot_visual_workaround]") {
+    using Shader::Optimization::OotFog;
+    {
+        Fixture f;
+        const auto distance = f.ir.FPAdd(f.ir.FPNeg(f.ir.FPExp2(f.ir.Imm32(1.0f))),
+                                        f.ir.FPExp2(f.ir.Imm32(3.0f)));
+        CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog,
+                                                                   OotFog::On));
+        CHECK(Evaluate(distance) == 6.0f);
+    }
+    {
+        Fixture f;
+        f.program.stage = Shader::Stage::Fragment;
+        const auto color = f.ir.FPMul(f.ir.Imm32(10.0f), f.ir.GetFloatCbuf(f.ir.Imm32(3U),
+                                                                           f.ir.Imm32(0x38U)));
+        REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final,
+                                                               OotFog::On) == 1);
+        CHECK(Evaluate(color) == Catch::Approx(13.0f));
+    }
 }

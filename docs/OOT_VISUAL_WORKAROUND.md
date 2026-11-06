@@ -8,13 +8,15 @@ outdoor haze and exposure look closer to the reference. The root cause of the ha
 
 | Value | Fog integration | Exposure |
 |---|---|---|
-| `on` (default) | unchanged | unchanged |
+| `on` | unchanged | × 0.65 |
 | `reduced` | slice distance × 0.25 | × 0.65 |
 | `off` | slice distance 0: no extinction or scattering | × 0.65 |
+| `original` (default) | unchanged | unchanged |
 
+`on` keeps the exposure correction: without it the image is brighter than on the console.
 Without `EDEN_NX2_OOT_FOG`, `EDEN_NX2_OOT_VISUAL_WORKAROUND=1` means `reduced`, as before. Builds
 that ship `EDEN_NX2_OOT_FOG=reduced` in the `nx2_switches.txt` next to the executable still honor a
-user's `EDEN_NX2_OOT_VISUAL_WORKAROUND=0` (older builds' opt-out) as `on`.
+user's `EDEN_NX2_OOT_VISUAL_WORKAROUND=0` (older builds' opt-out) as `original`.
 
 Each edited shader logs `TEMPORARY OoT visual workaround: shader <hash>, <n> scalar edits` at
 warning level. An edit count of 0 means the shader no longer has the expected shape and was left
