@@ -223,6 +223,7 @@ private:
     u32 num_textures{};
     bool fragment_has_color0_output{};
     u32 zero_texture_handles{};
+    std::array<bool, 8> fragment_writes_color{};
     bool writes_storage{};
 
     vk::DescriptorSetLayout descriptor_set_layout;
