@@ -11,6 +11,7 @@
 
 #include <QColor>
 #include <QFontMetricsF>
+#include <QLinearGradient>
 #include <QLocale>
 #include <QPainter>
 #include <QPainterPath>
@@ -71,12 +72,35 @@ constexpr QColor TitleColor{0xF2, 0xF2, 0xF3};
 constexpr QColor MetaColor{0x7C, 0x80, 0x89};
 constexpr QColor StageColor{0xB5, 0xB8, 0xBF};
 constexpr QColor TrackColor{0x26, 0x28, 0x2D};
-constexpr QColor FillColor{0xED, 0xEE, 0xF0};
 constexpr QColor SweepColor{0xED, 0xEE, 0xF0, 115};
 constexpr QColor DetailColor{0x6E, 0x72, 0x7B};
 constexpr QColor MarkColor{0x2A, 0x2C, 0x31};
 constexpr QColor MarkLeftColor{0x16, 0xC6, 0xA8};
 constexpr QColor MarkRightColor{0x2B, 0x6C, 0xFF};
+
+// The bar's colour drifts slowly through soft rainbow hues while loading: a full turn every
+// HueCycleMs, spread a little from the bar's left end to its right, so the fill also reaches
+// further around the wheel as it grows.
+constexpr double HueCycleMs = 24000;
+constexpr double HueSpread = 75; ///< Degrees between the bar's two ends
+constexpr float BarSaturation = 0.40f;
+constexpr float BarValue = 0.95f;
+
+QColor BarHue(double t, double position, float alpha) {
+    const double degrees = std::fmod(t / HueCycleMs * 360.0 + position * HueSpread, 360.0);
+    return QColor::fromHsvF(static_cast<float>(degrees / 360.0), BarSaturation, BarValue, alpha);
+}
+
+/// The hues across the whole bar, so the fill shows the part it covers.
+QLinearGradient BarGradient(double t, const QRectF& line, float alpha) {
+    QLinearGradient gradient(line.left(), 0, line.right(), 0);
+    constexpr int Stops = 4;
+    for (int stop = 0; stop <= Stops; ++stop) {
+        const double position = static_cast<double>(stop) / Stops;
+        gradient.setColorAt(position, BarHue(t, position, alpha));
+    }
+    return gradient;
+}
 
 constexpr int TickMs = 33;
 constexpr double FadeInMs = 500;
@@ -371,23 +395,15 @@ double LoadingScreen::Elapsed(Clock::time_point now) const {
 }
 
 void LoadingScreen::StartAnimating() {
-    if (!animation_timer.isActive() && IsAnimating(Elapsed())) {
+    if (!animation_timer.isActive() && IsAnimating()) {
         animation_timer.start();
     }
 }
 
-bool LoadingScreen::IsAnimating(double t) const {
-    if (exit_ms >= 0) {
-        // Finishes even when hidden, so Hidden is always sent.
-        return true;
-    }
-    if (!isVisible()) {
-        return false;
-    }
-    // Past the intro, outside of building shaders a sweep always runs. While building only the
-    // eased fill and the estimate move.
-    return t < IntroMs || stage != Stage::Build || closing_ms >= 0 || fill != FillTarget() ||
-           eta_end_ms >= 0;
+bool LoadingScreen::IsAnimating() const {
+    // Finishes even when hidden, so Hidden is always sent. Otherwise the bar's hue always drifts,
+    // so it repaints (only the progress area past the intro) for as long as the screen shows.
+    return exit_ms >= 0 || isVisible();
 }
 
 void LoadingScreen::Animate() {
@@ -421,7 +437,7 @@ void LoadingScreen::Animate() {
     } else {
         update(ProgressRegion());
     }
-    if (!IsAnimating(t)) {
+    if (!IsAnimating()) {
         animation_timer.stop();
     }
 }
@@ -604,7 +620,7 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
         if (fill > 0 && fill_opacity > 0) {
             painter.setOpacity(progress_in * fill_opacity);
             painter.fillRect(QRectF(line.left(), line_top, line.width() * fill, line_height),
-                             FillColor);
+                             BarGradient(t, line, 1.0f));
             painter.setOpacity(progress_in);
         }
         if (const double sweep_start = SweepStart(t); sweep_start >= 0) {
@@ -615,7 +631,7 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
             if (end > begin) {
                 painter.fillRect(QRectF(line.left() + begin * scale, line_top,
                                         (end - begin) * scale, line_height),
-                                 SweepColor);
+                                 BarGradient(t, line, SweepColor.alphaF()));
             }
         }
 

@@ -70,7 +70,7 @@ private:
 
     void StartAnimating();
     void Animate();
-    bool IsAnimating(double t) const;
+    bool IsAnimating() const;
     QRegion ProgressRegion() const;
     void UpdateLayout(qreal device_pixel_ratio);
 
@@ -99,7 +99,7 @@ private:
     QFont row_font;
     QFont detail_font;
 
-    QTimer animation_timer; ///< Runs only while something moves
+    QTimer animation_timer; ///< Runs while the screen shows (the bar's hue drifts)
     Clock::time_point start_time;
     double prepare_ms = 0;   ///< When preparing began, for the bar's sweep
     double complete_ms = -1; ///< When loading completed, for closing the logo
