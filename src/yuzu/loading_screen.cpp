@@ -72,19 +72,23 @@ constexpr QColor TitleColor{0xF2, 0xF2, 0xF3};
 constexpr QColor MetaColor{0x7C, 0x80, 0x89};
 constexpr QColor StageColor{0xB5, 0xB8, 0xBF};
 constexpr QColor TrackColor{0x26, 0x28, 0x2D};
-constexpr QColor SweepColor{0xED, 0xEE, 0xF0, 115};
 constexpr QColor DetailColor{0x6E, 0x72, 0x7B};
 constexpr QColor MarkColor{0x2A, 0x2C, 0x31};
 constexpr QColor MarkLeftColor{0x16, 0xC6, 0xA8};
 constexpr QColor MarkRightColor{0x2B, 0x6C, 0xFF};
 
-// The bar's colour drifts slowly through soft rainbow hues while loading: a full turn every
-// HueCycleMs, spread a little from the bar's left end to its right, so the fill also reaches
-// further around the wheel as it grows.
+// The bar is a rainbow that drifts slowly while loading: a full turn of the wheel every
+// HueCycleMs, with two thirds of the wheel spread from the bar's left end to its right, so the fill
+// takes on more colours as it grows. A soft glow of the same colours sits under the fill.
 constexpr double HueCycleMs = 24000;
-constexpr double HueSpread = 75; ///< Degrees between the bar's two ends
-constexpr float BarSaturation = 0.40f;
-constexpr float BarValue = 0.95f;
+constexpr double HueSpread = 240; ///< Degrees between the bar's two ends
+constexpr float BarSaturation = 0.70f;
+constexpr float BarValue = 1.0f;
+constexpr qreal GlowInner = 3; ///< How far the glow's two layers reach past the line, in frame px
+constexpr qreal GlowOuter = 7;
+constexpr float GlowInnerAlpha = 0.22f;
+constexpr float GlowOuterAlpha = 0.09f;
+constexpr float SweepAlpha = 0.85f; ///< The sweep that runs while the game starts
 
 QColor BarHue(double t, double position, float alpha) {
     const double degrees = std::fmod(t / HueCycleMs * 360.0 + position * HueSpread, 360.0);
@@ -94,7 +98,7 @@ QColor BarHue(double t, double position, float alpha) {
 /// The hues across the whole bar, so the fill shows the part it covers.
 QLinearGradient BarGradient(double t, const QRectF& line, float alpha) {
     QLinearGradient gradient(line.left(), 0, line.right(), 0);
-    constexpr int Stops = 4;
+    constexpr int Stops = 8; ///< 30 degrees apart, so the blend between them stays on the wheel
     for (int stop = 0; stop <= Stops; ++stop) {
         const double position = static_cast<double>(stop) / Stops;
         gradient.setColorAt(position, BarHue(t, position, alpha));
@@ -457,7 +461,8 @@ QRegion LoadingScreen::ProgressRegion() const {
         return rect.toAlignedRect().adjusted(-2, -2, 2, 2);
     };
     QRegion region{
-        padded(frame.Rect(BarLeft, BarTop, BarWidth, DetailTop + DetailHeight - BarTop))};
+        padded(frame.Rect(BarLeft - GlowOuter, BarTop, BarWidth + 2 * GlowOuter,
+                          DetailTop + DetailHeight - BarTop))};
     region += padded(frame.Rect(BrandLeft - MarkGap * BrandMarkScale, BrandTop, 240, BrandHeight));
     return region;
 }
@@ -626,10 +631,24 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
         const qreal line_height =
             std::max<qreal>(1, std::round(line.height() * device_pixel_ratio)) / device_pixel_ratio;
         painter.fillRect(QRectF(line.left(), line_top, line.width(), line_height), TrackColor);
+        // A stretch of the rainbow line from left to left + width, over its soft glow.
+        const auto draw_glowing = [&](qreal left, qreal width, float alpha) {
+            painter.setPen(Qt::NoPen);
+            for (const auto& [reach, glow_alpha] :
+                 {std::pair{GlowOuter, GlowOuterAlpha}, std::pair{GlowInner, GlowInnerAlpha}}) {
+                const qreal grow = reach * scale;
+                painter.setBrush(BarGradient(t, line, glow_alpha * alpha));
+                painter.drawRoundedRect(
+                    QRectF(left - grow, line_top - grow, width + 2 * grow, line_height + 2 * grow),
+                    grow, grow);
+            }
+            painter.setBrush(Qt::NoBrush);
+            painter.fillRect(QRectF(left, line_top, width, line_height),
+                             BarGradient(t, line, alpha));
+        };
         if (fill > 0 && fill_opacity > 0) {
             painter.setOpacity(progress_in * fill_opacity);
-            painter.fillRect(QRectF(line.left(), line_top, line.width() * fill, line_height),
-                             BarGradient(t, line, 1.0f));
+            draw_glowing(line.left(), line.width() * fill, 1.0f);
             painter.setOpacity(progress_in);
         }
         if (const double sweep_start = SweepStart(t); sweep_start >= 0) {
@@ -638,9 +657,7 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
             const double begin = std::max(sweep, 0.0);
             const double end = std::min<double>(sweep + SweepWidth, BarWidth);
             if (end > begin) {
-                painter.fillRect(QRectF(line.left() + begin * scale, line_top,
-                                        (end - begin) * scale, line_height),
-                                 BarGradient(t, line, SweepColor.alphaF()));
+                draw_glowing(line.left() + begin * scale, (end - begin) * scale, SweepAlpha);
             }
         }
 
