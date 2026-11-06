@@ -12,7 +12,6 @@ add_executable(tests
     video_core/parallel_recording_vulkan.cpp
     video_core/parallel_recording_shaders.h
     video_core/aftermath_dump.cpp
-    video_core/frame_dump_schedule.cpp
     video_core/flash_trigger.cpp
     video_core/unswizzle_workers.cpp
     video_core/gpu_timestamp.cpp
