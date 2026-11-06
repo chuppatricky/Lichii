@@ -102,7 +102,12 @@ QLinearGradient BarGradient(double t, const QRectF& line, float alpha) {
     return gradient;
 }
 
-constexpr int TickMs = 33;
+constexpr int TickMs = 16;
+// How fast the shown fill and estimate catch up with the reported ones: they cover 1 - 1/e of the
+// gap in this long, measured in time, so a late tick moves them further instead of the motion
+// slowing down and then jumping.
+constexpr double FillEaseMs = 200;
+constexpr double EtaEaseMs = 310;
 constexpr double FadeInMs = 500;
 constexpr double IntroMs = 900; ///< When the last element has faded in
 constexpr double SweepMs = 1400;
@@ -396,6 +401,7 @@ double LoadingScreen::Elapsed(Clock::time_point now) const {
 
 void LoadingScreen::StartAnimating() {
     if (!animation_timer.isActive() && IsAnimating()) {
+        last_animate_ms = -1;
         animation_timer.start();
     }
 }
@@ -416,8 +422,10 @@ void LoadingScreen::Animate() {
         return;
     }
 
+    const double step_ms = last_animate_ms < 0 ? TickMs : std::clamp(t - last_animate_ms, 0.0, 250.0);
+    last_animate_ms = t;
     const double target = FillTarget();
-    fill += (target - fill) * 0.15;
+    fill += (target - fill) * (1 - std::exp(-step_ms / FillEaseMs));
     if (std::abs(target - fill) < 0.001) {
         fill = target;
     }
@@ -428,7 +436,8 @@ void LoadingScreen::Animate() {
     if (eta_end_ms >= 0) {
         shown_eta_end_ms = shown_eta_end_ms < 0
                                ? eta_end_ms
-                               : shown_eta_end_ms + (eta_end_ms - shown_eta_end_ms) * 0.1;
+                               : shown_eta_end_ms + (eta_end_ms - shown_eta_end_ms) *
+                                                         (1 - std::exp(-step_ms / EtaEaseMs));
     }
 
     // Past the intro and fades only the progress and the brand mark change.

@@ -112,6 +112,7 @@ private:
     std::size_t value = 0;
     std::size_t total = 0;
     double fill = 0; ///< Shown progress, eased towards the reported one
+    double last_animate_ms = -1; ///< When the last animation tick ran (eases by elapsed time)
 
     // newly generated shaders are added to the end of the file, so when loading and compiling
     // shaders, it will start quickly but end slow if new shaders were added since previous launch.
