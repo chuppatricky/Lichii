@@ -4,7 +4,18 @@ This is a temporary, opt-in visual workaround for The Legend of Zelda: Ocarina o
 (`0400486024DEC000`). It is not an emulator fix. It edits two shaders of this game so the
 outdoor haze and exposure look closer to the reference. The root cause of the haze is still open.
 
-Set `EDEN_NX2_OOT_VISUAL_WORKAROUND=1` to enable it. Any other value, or no value, leaves it off.
+`EDEN_NX2_OOT_FOG` picks the fog:
+
+| Value | Fog integration | Exposure |
+|---|---|---|
+| `on` (default) | unchanged | unchanged |
+| `reduced` | slice distance × 0.25 | × 0.65 |
+| `off` | slice distance 0: no extinction or scattering | × 0.65 |
+
+Without `EDEN_NX2_OOT_FOG`, `EDEN_NX2_OOT_VISUAL_WORKAROUND=1` means `reduced`, as before. Builds
+that ship `EDEN_NX2_OOT_FOG=reduced` in the `nx2_switches.txt` next to the executable still honor a
+user's `EDEN_NX2_OOT_VISUAL_WORKAROUND=0` (older builds' opt-out) as `on`.
+
 Each edited shader logs `TEMPORARY OoT visual workaround: shader <hash>, <n> scalar edits` at
 warning level. An edit count of 0 means the shader no longer has the expected shape and was left
 unchanged.
@@ -22,7 +33,7 @@ final are not edited. No captured program matches the simple-bloom final.
 ## Limitations
 
 - Interiors use the same fog integration shader, so the shop and other interiors also get the
-  reduced fog while the workaround is on.
+  reduced (or no) fog while the workaround is on.
 - Interiors drawn with the adaptive final do not get the exposure change.
 - The workaround needs an outdoor and indoor A/B with the workaround on and off before it can be
   called validated.

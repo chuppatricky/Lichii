@@ -46,6 +46,10 @@ namespace Shader::IR {
 struct Program;
 }
 
+namespace Shader::Optimization {
+enum class OotFog; // shader_recompiler/ir_opt/oot_visual_workaround.h
+}
+
 namespace VideoCore {
 class ShaderNotify;
 }
@@ -204,7 +208,7 @@ private:
     VideoCore::ShaderNotify& shader_notify;
     bool use_asynchronous_shaders{};
     bool use_vulkan_pipeline_cache{};
-    bool oot_visual_workaround{};
+    Shader::Optimization::OotFog oot_fog{};
     u64 visual_workaround_title{};
     const size_t num_pipeline_workers;
     EmissionBudget emission_budget;

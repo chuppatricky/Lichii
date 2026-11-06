@@ -462,10 +462,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue() &&
                                 !DriverCachesPipelines(device_)},
-      oot_visual_workaround{[] {
-          const char* value = std::getenv("EDEN_NX2_OOT_VISUAL_WORKAROUND");
-          return value != nullptr && std::string_view{value} == "1";
-      }()},
+      oot_fog{Shader::Optimization::OotFogFromEnvironment()},
       num_pipeline_workers{device.HasBrokenParallelShaderCompiling() ? 1ULL
                                                                    : GetTotalPipelineWorkers()},
       emission_budget{num_pipeline_workers},
@@ -1628,7 +1625,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         if (const auto edits = Shader::Optimization::ApplyOotVisualWorkaround(
                 programs[index], program_id != 0 ? program_id : visual_workaround_title,
                 key.unique_hashes[index],
-                oot_visual_workaround)) {
+                oot_fog)) {
             LOG_WARNING(Render_Vulkan,
                         "TEMPORARY OoT visual workaround: shader {:016x}, {} scalar edits",
                         key.unique_hashes[index], *edits);
@@ -1945,7 +1942,7 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
     auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
     if (const auto edits = Shader::Optimization::ApplyOotVisualWorkaround(
             program, program_id != 0 ? program_id : visual_workaround_title, key.unique_hash,
-            oot_visual_workaround)) {
+            oot_fog)) {
         LOG_WARNING(Render_Vulkan,
                     "TEMPORARY OoT visual workaround: shader {:016x}, {} scalar edits",
                     key.unique_hash, *edits);

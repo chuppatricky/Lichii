@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -11,10 +13,47 @@
 
 namespace Shader::Optimization {
 
-// TEMPORARY opt-in visual workaround for Ocarina of Time, not an emulator fix.
+/// Ocarina of Time's outdoor fog (EDEN_NX2_OOT_FOG).
+enum class OotFog {
+    On,      ///< The game's fog as emulated, no shader edits
+    Reduced, ///< Fog slices 1/4 as thick and exposure 0.65 (the haze workaround)
+    Off,     ///< No fog (zero-thickness slices) and exposure 0.65
+};
+
+/// EDEN_NX2_OOT_FOG=on|reduced|off. Without it, EDEN_NX2_OOT_VISUAL_WORKAROUND=1 means reduced.
+/// EDEN_NX2_OOT_VISUAL_WORKAROUND=0 (older builds' opt-out, which users may still have in their
+/// own nx2_switches.txt) keeps the full fog over a shipped EDEN_NX2_OOT_FOG=reduced default.
+[[nodiscard]] inline OotFog ParseOotFog(const char* fog, const char* legacy) {
+    const std::string_view legacy_value = legacy != nullptr ? legacy : "";
+    std::optional<OotFog> mode;
+    if (fog != nullptr) {
+        const std::string_view value{fog};
+        if (value == "on") {
+            mode = OotFog::On;
+        } else if (value == "reduced") {
+            mode = OotFog::Reduced;
+        } else if (value == "off") {
+            mode = OotFog::Off;
+        }
+    }
+    if (!mode) {
+        return legacy_value == "1" ? OotFog::Reduced : OotFog::On;
+    }
+    if (*mode == OotFog::Reduced && legacy_value == "0") {
+        return OotFog::On;
+    }
+    return *mode;
+}
+
+[[nodiscard]] inline OotFog OotFogFromEnvironment() {
+    return ParseOotFog(std::getenv("EDEN_NX2_OOT_FOG"),
+                       std::getenv("EDEN_NX2_OOT_VISUAL_WORKAROUND"));
+}
+
+// TEMPORARY visual workaround for Ocarina of Time, not an emulator fix.
 inline std::optional<size_t> ApplyOotVisualWorkaround(IR::Program& program, u64 title_id,
-                                                     u64 shader_hash, bool enabled) {
-    if (!enabled || title_id != 0x0400486024DEC000ULL) {
+                                                     u64 shader_hash, OotFog mode) {
+    if (mode == OotFog::On || title_id != 0x0400486024DEC000ULL) {
         return std::nullopt;
     }
     const bool fog = shader_hash == 0x780c0536b89fc89eULL && program.stage == Stage::Compute;
@@ -61,6 +100,12 @@ inline std::optional<size_t> ApplyOotVisualWorkaround(IR::Program& program, u64 
         return 0;
     }
     for (const auto& [block, inst] : matches) {
+        if (fog && mode == OotFog::Off) {
+            // A zero slice distance, not distance * 0: no extinction or scattering accumulates,
+            // and an infinite distance can't turn into NaN.
+            inst->ReplaceUsesWith(IR::Value{0.0f});
+            continue;
+        }
         const auto insertion = block->Instructions().iterator_to(*inst);
         const auto original = block->PrependNewInst(insertion, *inst);
         IR::IREmitter ir{*block, insertion};

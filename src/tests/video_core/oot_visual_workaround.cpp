@@ -56,7 +56,7 @@ TEST_CASE("OoT visual workaround scales slice distance before extinction and sca
     const auto extinction = f.ir.FPAdd(f.ir.Imm32(1.0f), f.ir.FPMul(distance, f.ir.Imm32(2.0f)));
     const auto scattering = f.ir.FPMul(distance, f.ir.Imm32(4.0f));
     const auto transmittance = f.ir.FPExp2(IR::F32{f.ir.FPNeg(extinction)});
-    REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, true) == 1);
+    REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, Shader::Optimization::OotFog::Reduced) == 1);
     CHECK(Evaluate(distance) == 1.5f);
     CHECK(Evaluate(extinction) == 4.0f);
     CHECK(Evaluate(scattering) == 6.0f);
@@ -72,7 +72,7 @@ TEST_CASE("OoT exposure workaround scales only the verified exposure load",
     const auto other_offset = f.ir.GetFloatCbuf(f.ir.Imm32(3U), f.ir.Imm32(0x34U));
     const auto color = f.ir.FPMul(f.ir.Imm32(10.0f), exposure);
     const auto alpha = f.ir.Imm32(0.75f);
-    REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, true) == 1);
+    REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, Shader::Optimization::OotFog::Reduced) == 1);
     CHECK(Evaluate(color) == Catch::Approx(13.0f));
     CHECK(Evaluate(other_bank) == 2.0f);
     CHECK(Evaluate(other_offset) == 2.0f);
@@ -86,32 +86,77 @@ TEST_CASE("OoT fog matches the native sign-bit negate without touching other bit
     const auto bits = f.ir.BitCast<IR::U32>(value);
     const auto negated = f.ir.BitCast<IR::F32>(f.ir.BitwiseXor(bits, f.ir.Imm32(0x80000000U)));
     static_cast<void>(f.ir.FPAdd(negated, f.ir.FPExp2(f.ir.Imm32(3.0f))));
-    REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, true) == 1);
+    REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, Shader::Optimization::OotFog::Reduced) == 1);
 }
 
-TEST_CASE("OoT visual workaround is opt-in and rejects unknown titles stages and programs",
+TEST_CASE("OoT visual workaround is off with fog on and rejects unknown titles stages and programs",
           "[video_core][oot_visual_workaround]") {
     Fixture f;
     f.program.stage = Shader::Stage::Fragment;
     const auto exposure = f.ir.GetFloatCbuf(f.ir.Imm32(3U), f.ir.Imm32(0x38U));
-    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, false));
-    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title + 1, Final, true));
+    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, Shader::Optimization::OotFog::On));
+    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title + 1, Final, Shader::Optimization::OotFog::Reduced));
     CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(
-        f.program, Title, 0x6cb06edf14be1d79ULL, true));
+        f.program, Title, 0x6cb06edf14be1d79ULL, Shader::Optimization::OotFog::Reduced));
     f.program.stage = Shader::Stage::Compute;
-    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, true));
+    CHECK_FALSE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final, Shader::Optimization::OotFog::Reduced));
     CHECK(Evaluate(exposure) == 2.0f);
 }
 
 TEST_CASE("OoT visual workaround fails closed when the matched scalar shape changes",
           "[video_core][oot_visual_workaround]") {
     Fixture f;
-    CHECK(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, true) == 0);
+    CHECK(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, Shader::Optimization::OotFog::Reduced) == 0);
     for (int i = 0; i < 2; ++i) {
         static_cast<void>(f.ir.FPAdd(f.ir.FPNeg(f.ir.FPExp2(f.ir.Imm32(1.0f))),
                                     f.ir.FPExp2(f.ir.Imm32(3.0f))));
     }
     const auto size = f.block.size();
-    CHECK(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, true) == 0);
+    CHECK(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog, Shader::Optimization::OotFog::Reduced) == 0);
     CHECK(f.block.size() == size);
+}
+
+TEST_CASE("OoT fog off zeroes the slice distance and keeps the exposure change",
+          "[video_core][oot_visual_workaround]") {
+    using Shader::Optimization::OotFog;
+    {
+        Fixture f;
+        const auto distance = f.ir.FPAdd(f.ir.FPNeg(f.ir.FPExp2(f.ir.Imm32(1.0f))),
+                                        f.ir.FPExp2(f.ir.Imm32(3.0f)));
+        const auto extinction =
+            f.ir.FPAdd(f.ir.Imm32(1.0f), f.ir.FPMul(distance, f.ir.Imm32(2.0f)));
+        const auto scattering = f.ir.FPMul(distance, f.ir.Imm32(4.0f));
+        REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Fog,
+                                                               OotFog::Off) == 1);
+        CHECK(Evaluate(distance) == 0.0f);
+        CHECK(Evaluate(extinction) == 1.0f);
+        CHECK(Evaluate(scattering) == 0.0f);
+    }
+    {
+        Fixture f;
+        f.program.stage = Shader::Stage::Fragment;
+        const auto exposure = f.ir.GetFloatCbuf(f.ir.Imm32(3U), f.ir.Imm32(0x38U));
+        const auto color = f.ir.FPMul(f.ir.Imm32(10.0f), exposure);
+        REQUIRE(Shader::Optimization::ApplyOotVisualWorkaround(f.program, Title, Final,
+                                                               OotFog::Off) == 1);
+        CHECK(Evaluate(color) == Catch::Approx(13.0f));
+    }
+}
+
+TEST_CASE("OoT fog switch reads on, reduced and off and honors the older opt-out",
+          "[video_core][oot_visual_workaround]") {
+    using Shader::Optimization::OotFog;
+    using Shader::Optimization::ParseOotFog;
+    CHECK(ParseOotFog(nullptr, nullptr) == OotFog::On);
+    CHECK(ParseOotFog(nullptr, "1") == OotFog::Reduced);
+    CHECK(ParseOotFog(nullptr, "0") == OotFog::On);
+    CHECK(ParseOotFog("on", nullptr) == OotFog::On);
+    CHECK(ParseOotFog("reduced", nullptr) == OotFog::Reduced);
+    CHECK(ParseOotFog("off", nullptr) == OotFog::Off);
+    CHECK(ParseOotFog("off", "1") == OotFog::Off);
+    CHECK(ParseOotFog("on", "1") == OotFog::On);
+    CHECK(ParseOotFog("reduced", "0") == OotFog::On);
+    CHECK(ParseOotFog("off", "0") == OotFog::Off);
+    CHECK(ParseOotFog("bogus", "1") == OotFog::Reduced);
+    CHECK(ParseOotFog("bogus", nullptr) == OotFog::On);
 }
