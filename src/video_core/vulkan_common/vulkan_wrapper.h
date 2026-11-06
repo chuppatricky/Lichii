@@ -248,6 +248,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdPushDescriptorSetWithTemplateKHR vkCmdPushDescriptorSetWithTemplateKHR{};
     PFN_vkCmdResetQueryPool vkCmdResetQueryPool{};
     PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp{};
+    PFN_vkCmdWriteBufferMarkerAMD vkCmdWriteBufferMarkerAMD{};
     PFN_vkCmdResolveImage vkCmdResolveImage{};
     PFN_vkCmdSetBlendConstants vkCmdSetBlendConstants{};
     PFN_vkCmdSetCullModeEXT vkCmdSetCullModeEXT{};
@@ -1328,6 +1329,11 @@ public:
         const VideoCommon::HostGpuProfile::Scope profile{
             VideoCommon::HostGpuProfile::Phase::Encode};
         dld->vkCmdWriteTimestamp(handle, stage, query_pool, query);
+    }
+
+    void WriteBufferMarkerAMD(VkPipelineStageFlagBits stage, VkBuffer buffer, VkDeviceSize offset,
+                              u32 marker) const noexcept {
+        dld->vkCmdWriteBufferMarkerAMD(handle, stage, buffer, offset, marker);
     }
 
     void BindDescriptorSets(VkPipelineBindPoint bind_point, VkPipelineLayout layout, u32 first,
