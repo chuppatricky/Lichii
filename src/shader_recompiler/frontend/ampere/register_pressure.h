@@ -80,8 +80,16 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0xa23:
     case 0x623:
     case 0x423:
+    case 0xa19: // SHF with a cbuf or uniform shift amount: Ra, Rc
+    case 0xc19:
         operand(16);
         operand(24);
+        operand(64);
+        break;
+    case 0x219: // SHF, register shift amount: Ra, Rb, Rc
+        operand(16);
+        operand(24);
+        operand(32);
         operand(64);
         break;
     case 0x621:

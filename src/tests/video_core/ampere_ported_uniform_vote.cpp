@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 
@@ -89,12 +90,17 @@ TEST_CASE("Ampere uniform votes reach UR28 to UR62 through the high uniform mirr
     REQUIRE(lowered.instructions.size() == 3);
     REQUIRE(lowered.instructions[0] == Vote(214, 7, 7, 1));
     REQUIRE(lowered.instructions[1] == Vote(180, 7, 7, 1));
-    // The mirrors are reserved: a native register the high bank shadows is rejected.
+    // A native register the high mirrors would take (R214) is shadowed. Shadowing swaps whole
+    // 4-register groups, so the program is lowered again with four mirrors: UR28 moves to R212
+    // and the native write goes through a borrowed group below it.
     const auto shadowed = LowerToMaxwell(std::array{
         Instruction{{0x00d67802, 0x3f800000, 0x00000f00, 0x000fe400}},
         Instruction{{0x001c7886, 0, 0x038e0100, 0x000fe400}}, Exit});
-    REQUIRE_FALSE(shadowed);
-    REQUIRE(shadowed.error == "native program uses lowering scratch registers");
+    INFO(shadowed.error);
+    REQUIRE(shadowed);
+    REQUIRE(std::ranges::find(shadowed.instructions, Vote(212, 7, 7, 1)) !=
+            shadowed.instructions.end());
+    REQUIRE(shadowed.instructions.size() > 3);
 }
 
 TEST_CASE("Ampere uniform votes keep the source predicate and its negation",
@@ -132,4 +138,26 @@ TEST_CASE("Ampere uniform votes reject unmapped registers and unsupported fields
         INFO("bit " << bit);
         REQUIRE_FALSE(lowered);
     }
+}
+
+TEST_CASE("Ampere SHF register forms shadow sources in the mirrored uniform range",
+          "[video_core][ampere][uniform_vote]") {
+    // From Ocarina of Time's tessellated vegetation (rejected before: "native register
+    // shadowing mode"): SHF R7 = funnel shift of R240 and R239 by R27.
+    const Instruction shf{{0xf0077219, 0x0000001b, 0x000012ef, 0x000fe400}};
+    const auto pressure = Shader::Ampere::PrepareRegisterPressure(shf, 216);
+    REQUIRE(pressure.valid);
+    REQUIRE(pressure.prefix.size() == 16); // R236-R239 and R240-R243, 8 copies each
+    REQUIRE(pressure.suffix.size() == 16);
+    CHECK(pressure.instruction.Bits(16, 8) == 7);
+    CHECK(pressure.instruction.Bits(32, 8) == 27);
+    CHECK(pressure.instruction.Bits(24, 8) < 216);
+    CHECK(pressure.instruction.Bits(64, 8) < 216);
+    CHECK(pressure.instruction.Bits(24, 8) % 4 == 240 % 4);
+    CHECK(pressure.instruction.Bits(64, 8) % 4 == 239 % 4);
+    // The cbuf and uniform forms read Ra and Rc only.
+    const Instruction shf_cbuf{{0xf007aa19, 0x0000001b, 0x000012ef, 0x000fe400}};
+    const auto cbuf_pressure = Shader::Ampere::PrepareRegisterPressure(shf_cbuf, 216);
+    REQUIRE(cbuf_pressure.valid);
+    CHECK(cbuf_pressure.instruction.words[1] == shf_cbuf.words[1]);
 }

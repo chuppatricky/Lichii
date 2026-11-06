@@ -314,8 +314,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 requires_shadow = true;
         }
         if (requires_shadow) {
-            if (!uses_uniform_bank || (high_uniform_base & 3))
+            if (!uses_uniform_bank || (high_uniform_base & 3)) {
+                // Shadowing swaps whole 4-register groups, so it needs the reserved base on a
+                // 4-register boundary: lower again with two more mirrored registers below R216.
+                if (uses_uniform_bank)
+                    result.high_uniform_registers =
+                        (std::max)(result.high_uniform_registers, high_uniforms + 2);
                 return fail(index, "native program uses lowering scratch registers");
+            }
             pressure = PrepareRegisterPressure(insn, high_uniform_base);
             if (!pressure.valid) return fail(index, "native register shadowing mode");
             insn = pressure.instruction;
