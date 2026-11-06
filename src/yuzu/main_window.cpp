@@ -951,7 +951,6 @@ void MainWindow::InitializeWidgets() {
     loading_screen->hide();
     ui->horizontalLayout->addWidget(loading_screen);
     connect(loading_screen, &LoadingScreen::Hidden, this, [&] {
-        loading_screen->Clear();
         if (emulation_running) {
             render_window->show();
             render_window->setFocus();
@@ -1485,7 +1484,7 @@ void MainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
         state != Qt::ApplicationActive) {
         LOG_DEBUG(Frontend, "ApplicationState unusual flag: {} ", state);
     }
-    if (!emulation_running) {
+    if (!emulation_running || emulation_stopping) {
         return;
     }
     if (UISettings::values.pause_when_in_background) {
@@ -2284,11 +2283,19 @@ bool MainWindow::OnShutdownBegin() {
     return true;
 }
 
-void MainWindow::OnShutdownBeginDialog() {
-    shutdown_dialog =
-        new OverlayDialog(this, *QtCommon::system, QString{}, tr("Closing software..."), QString{},
-                          QString{}, Qt::AlignHCenter | Qt::AlignVCenter);
-    shutdown_dialog->open();
+void MainWindow::ShowClosingScreen() {
+    emulation_stopping = true;
+    if (!ui->action_Single_Window_Mode->isChecked()) {
+        // The closing screen shows in this window, so bring it forward before the render window
+        // goes away.
+        raise();
+        activateWindow();
+    }
+    render_window->hide();
+    loading_screen->ShowClosing();
+    loading_screen->show();
+    // Nothing can be started until the emulation has stopped.
+    setEnabled(false);
 }
 
 void MainWindow::OnEmulationStopTimeExpired() {
@@ -2329,11 +2336,8 @@ void MainWindow::OnEmulationStopped() {
         QtCommon::emu_thread.reset();
     }
 
-    if (shutdown_dialog) {
-        shutdown_dialog->deleteLater();
-        shutdown_dialog = nullptr;
-    }
-
+    setEnabled(true);
+    emulation_stopping = false;
     emulation_running = false;
 
     discord_rpc->Update();
@@ -2353,7 +2357,6 @@ void MainWindow::OnEmulationStopped() {
     } else {
         game_list->show();
     }
-    game_list->SetFilterFocus();
     tas_label->clear();
     input_subsystem->GetTas()->Stop();
     OnTasStateChanged();
@@ -2392,6 +2395,7 @@ void MainWindow::OnEmulationStopped() {
 
     // Enable game list
     game_list->setEnabled(true);
+    game_list->SetFilterFocus();
 
     Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
     QtCommon::system->HIDCore().ReloadInputDevices();
@@ -3256,7 +3260,7 @@ void MainWindow::OnStopGame() {
     if (ConfirmShutdownGame()) {
         play_time_manager->Stop();
         if (OnShutdownBegin()) {
-            OnShutdownBeginDialog();
+            ShowClosingScreen();
         } else {
             OnEmulationStopped();
         }
@@ -3325,6 +3329,11 @@ void MainWindow::OnExecuteProgram(std::size_t program_index) {
 }
 
 void MainWindow::OnExit() {
+    // A stop already underway finishes in OnEmulationStopped once the emulation thread is done,
+    // without blocking here and freezing the closing screen.
+    if (emulation_stopping) {
+        return;
+    }
     ShutdownGame();
 }
 
@@ -5110,7 +5119,8 @@ bool MainWindow::SelectRomFSDumpTarget(const FileSys::ContentProvider& installed
 }
 
 bool MainWindow::ConfirmClose() {
-    if (QtCommon::emu_thread == nullptr ||
+    // A stop underway was already confirmed, and the disabled window couldn't take the question.
+    if (QtCommon::emu_thread == nullptr || emulation_stopping ||
         UISettings::values.confirm_before_stopping.GetValue() == ConfirmStop::Ask_Never)
         return true;
 
@@ -5140,7 +5150,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             return;
         }
         if (OnShutdownBegin()) {
-            OnShutdownBeginDialog();
+            ShowClosingScreen();
         }
         return;
     }

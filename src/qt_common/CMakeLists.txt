@@ -22,6 +22,7 @@ add_library(qt_common STATIC
     util/meta.h util/meta.cpp
     util/content.h util/content.cpp
     util/rom.h util/rom.cpp
+    util/title.h util/title.cpp
     util/applet.h util/applet.cpp
     util/compress.h util/compress.cpp
     util/fs.h util/fs.cpp

@@ -17,9 +17,9 @@
 #include <QRegion>
 #include <QStringList>
 
+#include "common/scm_rev.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "core/loader/loader.h"
-#include "qt_common/util/boxart.h"
 #include "qt_common/util/title.h"
 #include "video_core/rasterizer_interface.h"
 #include "yuzu/loading_screen.h"
@@ -82,6 +82,8 @@ constexpr int TickMs = 33;
 constexpr double FadeInMs = 500;
 constexpr double IntroMs = 900; ///< When the last element has faded in
 constexpr double SweepMs = 1400;
+constexpr double LaunchHoldMs = 250; ///< How long the full bar stays before the sweep takes over
+constexpr double LaunchFadeMs = 350;
 constexpr double LogoCloseMs = 400;
 constexpr double ExitMs = 500;
 
@@ -240,15 +242,11 @@ void LoadingScreen::Prepare(Loader::AppLoader& loader) {
     }
     meta = version.isEmpty() ? platform : QStringLiteral("%1  ·  %2").arg(platform, version);
 
-    // Only local images, the network is never waited on here.
-    cover = QtCommon::Boxart::LoadCachedCover(program_id, name);
-    if (cover.isNull()) {
-        std::vector<u8> icon;
-        if (loader.ReadIcon(icon) == Loader::ResultStatus::Success && !icon.empty()) {
-            cover.loadFromData(icon.data(), static_cast<int>(icon.size()));
-        }
-        // For the next boot.
-        QtCommon::Boxart::Prefetch(program_id, name);
+    // The game's own icon (Nemyu also uses downloaded box art, which this build doesn't have).
+    cover = {};
+    std::vector<u8> icon;
+    if (loader.ReadIcon(icon) == Loader::ResultStatus::Success && !icon.empty()) {
+        cover.loadFromData(icon.data(), static_cast<int>(icon.size()));
     }
     layout_size = {};
 
@@ -259,6 +257,9 @@ void LoadingScreen::Prepare(Loader::AppLoader& loader) {
     fill = 0;
     prepare_ms = 0;
     complete_ms = -1;
+    launch_ms = -1;
+    closing_ms = -1;
+    fade_in_ms = 0;
     exit_ms = -1;
     slow_shader_compile_start = false;
     previous_time = start_time;
@@ -271,7 +272,8 @@ void LoadingScreen::Prepare(Loader::AppLoader& loader) {
 }
 
 void LoadingScreen::OnLoadComplete() {
-    if (exit_ms >= 0) {
+    // A closing application stays on this screen until it has stopped.
+    if (exit_ms >= 0 || closing_ms >= 0) {
         return;
     }
     exit_ms = Elapsed();
@@ -281,18 +283,43 @@ void LoadingScreen::OnLoadComplete() {
     StartAnimating();
 }
 
+void LoadingScreen::ShowClosing() {
+    if (!isVisible() || exit_ms >= 0) {
+        // Shown whole at once, fading in from black like the loading did.
+        start_time = Clock::now() - std::chrono::milliseconds(static_cast<int>(IntroMs));
+        stage = Stage::Complete;
+        fill = 1;
+        complete_ms = 0;
+        launch_ms = 0;
+        fade_in_ms = IntroMs;
+        exit_ms = -1;
+    }
+    closing_ms = Elapsed();
+    // A fill still showing fades out as it does when the game starts, and a running sweep carries on.
+    if (launch_ms < 0 || launch_ms > closing_ms) {
+        launch_ms = closing_ms;
+    }
+    StartAnimating();
+    update();
+}
+
 void LoadingScreen::OnLoadProgress(VideoCore::LoadCallbackStage new_stage, std::size_t new_value,
                                    std::size_t new_total) {
     using namespace std::chrono;
     const auto now = Clock::now();
     if (new_stage != stage) {
         stage = new_stage;
+        launch_ms = -1;
         if (stage == Stage::Prepare) {
             prepare_ms = Elapsed(now);
             complete_ms = -1;
             fill = 0;
         } else if (stage == Stage::Complete) {
             complete_ms = Elapsed(now);
+            // With nothing filled, preparing's sweep carries on and the fill never shows.
+            if (fill == 0) {
+                launch_ms = prepare_ms;
+            }
         }
         // reset back to fast shader compiling since the stage changed, and don't take the time
         // spent in the previous stage for a slowdown
@@ -332,6 +359,7 @@ void LoadingScreen::OnLoadProgress(VideoCore::LoadCallbackStage new_stage, std::
 
 void LoadingScreen::Clear() {
     animation_timer.stop();
+    closing_ms = -1;
     exit_ms = -1;
     cover = {};
     cover_pixmap = {};
@@ -356,9 +384,10 @@ bool LoadingScreen::IsAnimating(double t) const {
     if (!isVisible()) {
         return false;
     }
-    // Past the intro only the sweep, the eased fill, the estimate and the closing logo move.
-    return t < IntroMs || stage == Stage::Prepare || fill != FillTarget() || eta_end_ms >= 0 ||
-           (complete_ms >= 0 && t < complete_ms + LogoCloseMs);
+    // Past the intro, outside of building shaders a sweep always runs. While building only the
+    // eased fill and the estimate move.
+    return t < IntroMs || stage != Stage::Build || closing_ms >= 0 || fill != FillTarget() ||
+           eta_end_ms >= 0;
 }
 
 void LoadingScreen::Animate() {
@@ -376,14 +405,18 @@ void LoadingScreen::Animate() {
     if (std::abs(target - fill) < 0.001) {
         fill = target;
     }
+    if (stage == Stage::Complete && launch_ms < 0 && fill == target) {
+        // The full bar shows for a moment, then the sweep runs until the game starts.
+        launch_ms = t + LaunchHoldMs;
+    }
     if (eta_end_ms >= 0) {
         shown_eta_end_ms = shown_eta_end_ms < 0
                                ? eta_end_ms
                                : shown_eta_end_ms + (eta_end_ms - shown_eta_end_ms) * 0.1;
     }
 
-    // Past the intro only the progress and the brand mark change.
-    if (t < IntroMs + TickMs || exit_ms >= 0) {
+    // Past the intro and fades only the progress and the brand mark change.
+    if (t < IntroMs + TickMs || t < fade_in_ms + FadeInMs + TickMs || exit_ms >= 0) {
         update();
     } else {
         update(ProgressRegion());
@@ -440,7 +473,20 @@ double LoadingScreen::FillTarget() const {
     }
 }
 
+double LoadingScreen::SweepStart(double t) const {
+    if (stage == Stage::Prepare) {
+        return prepare_ms;
+    }
+    if ((stage == Stage::Complete || closing_ms >= 0) && launch_ms >= 0 && t >= launch_ms) {
+        return launch_ms;
+    }
+    return -1;
+}
+
 QString LoadingScreen::StageText() const {
+    if (closing_ms >= 0) {
+        return tr("Closing");
+    }
     switch (stage) {
     case Stage::Prepare:
         return tr("Preparing");
@@ -534,12 +580,20 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
     const double progress_in = OutCubic(Segment(t, 400, IntroMs));
     if (progress_in > 0) {
         painter.setOpacity(progress_in);
+        // The fill, the percent and the shader count fade out once the sweep takes over.
+        const double fill_opacity =
+            launch_ms >= 0 ? 1 - Segment(t, launch_ms, launch_ms + LaunchFadeMs) : 1;
+
         const QRectF row = frame.Rect(BarLeft, BarTop, BarWidth, RowHeight);
         painter.setFont(row_font);
         painter.setPen(StageColor);
         painter.drawText(row, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, StageText());
-        painter.drawText(row, Qt::AlignRight | Qt::AlignVCenter | Qt::TextSingleLine,
-                         PercentText());
+        if (fill_opacity > 0) {
+            painter.setOpacity(progress_in * fill_opacity);
+            painter.drawText(row, Qt::AlignRight | Qt::AlignVCenter | Qt::TextSingleLine,
+                             PercentText());
+            painter.setOpacity(progress_in);
+        }
 
         // Kept on whole pixels so the line stays sharp at any scale.
         const QRectF line = frame.Rect(BarLeft, LineTop, BarWidth, LineHeight);
@@ -547,8 +601,14 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
         const qreal line_height =
             std::max<qreal>(1, std::round(line.height() * device_pixel_ratio)) / device_pixel_ratio;
         painter.fillRect(QRectF(line.left(), line_top, line.width(), line_height), TrackColor);
-        if (stage == Stage::Prepare) {
-            const double phase = std::fmod(t - prepare_ms, SweepMs) / SweepMs;
+        if (fill > 0 && fill_opacity > 0) {
+            painter.setOpacity(progress_in * fill_opacity);
+            painter.fillRect(QRectF(line.left(), line_top, line.width() * fill, line_height),
+                             FillColor);
+            painter.setOpacity(progress_in);
+        }
+        if (const double sweep_start = SweepStart(t); sweep_start >= 0) {
+            const double phase = std::fmod(t - sweep_start, SweepMs) / SweepMs;
             const double sweep = -SweepWidth + phase * (BarWidth + SweepWidth);
             const double begin = std::max(sweep, 0.0);
             const double end = std::min<double>(sweep + SweepWidth, BarWidth);
@@ -557,11 +617,9 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
                                         (end - begin) * scale, line_height),
                                  SweepColor);
             }
-        } else if (fill > 0) {
-            painter.fillRect(QRectF(line.left(), line_top, line.width() * fill, line_height),
-                             FillColor);
         }
 
+        painter.setOpacity(progress_in * fill_opacity);
         painter.setFont(detail_font);
         painter.setPen(DetailColor);
         painter.drawText(frame.Rect(BarLeft, DetailTop, BarWidth, DetailHeight),
@@ -569,10 +627,14 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
     }
     painter.setOpacity(1);
 
-    // The brand mark fills with the progress, and its halves close up once loading is done.
-    const double closing =
+    // The brand mark fills with the progress, its halves close up once loading is done, and they
+    // part again when closing.
+    double joined =
         complete_ms >= 0 ? OutCubic(Segment(t, complete_ms, complete_ms + LogoCloseMs)) : 0;
-    const qreal gap = MarkGap * (1 - closing);
+    if (closing_ms >= 0) {
+        joined *= 1 - OutCubic(Segment(t, closing_ms, closing_ms + LogoCloseMs));
+    }
+    const qreal gap = MarkGap * (1 - joined);
     const qreal level = stage == Stage::Prepare ? 0 : fill;
     painter.save();
     painter.translate(frame.Point(BrandLeft + MarkGap * BrandMarkScale,
@@ -593,12 +655,16 @@ void LoadingScreen::paintEvent(QPaintEvent*) {
     painter.restore();
     painter.setFont(row_font);
     painter.setPen(DetailColor);
+    // This build's name (dist/release_name.txt), or Lichii for builds without one.
+    const QString brand = Common::g_release_name[0] != '\0'
+                              ? QString::fromUtf8(Common::g_release_name)
+                              : QStringLiteral("Lichii");
     painter.drawText(
-        frame.Rect(BrandLeft + BrandMarkWidth + BrandTextGap, BrandTop, 200, BrandHeight),
-        Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, QStringLiteral("Nemyu"));
+        frame.Rect(BrandLeft + BrandMarkWidth + BrandTextGap, BrandTop, 640, BrandHeight),
+        Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine, brand);
 
     // Fades in from black, and back to black on exit.
-    double veil = 1 - OutCubic(Segment(t, 0, FadeInMs));
+    double veil = 1 - OutCubic(Segment(t, fade_in_ms, fade_in_ms + FadeInMs));
     if (exit_ms >= 0) {
         veil += InOutCubic(Segment(t, exit_ms, exit_ms + ExitMs));
     }

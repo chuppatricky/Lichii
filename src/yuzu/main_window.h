@@ -438,7 +438,7 @@ private slots:
     void OnLanguageChanged(const QString& locale);
     void OnMouseActivity();
     bool OnShutdownBegin();
-    void OnShutdownBeginDialog();
+    void ShowClosingScreen();
     void OnEmulationStopped();
     void OnEmulationStopTimeExpired();
     void OnEmulationStopTimeout();
@@ -515,7 +515,6 @@ private:
     LoadingScreen* loading_screen = nullptr;
     QTimer shutdown_timer;
     QTimer emu_terminate_timer;
-    OverlayDialog* shutdown_dialog{};
     PerformanceOverlay* perf_overlay = nullptr;
 #ifdef HAS_RESHADE
     ConfigurePostProcessing* post_processing_dialog = nullptr;
@@ -558,6 +557,8 @@ private:
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;
+    // Whether a stop showing the closing screen is underway
+    bool emulation_stopping = false;
     bool boot_in_progress = false;
     bool close_pending = false;
     // The path to the game currently running

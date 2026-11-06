@@ -38,7 +38,7 @@ public:
     /// currently loaded application.
     void Prepare(Loader::AppLoader& loader);
 
-    /// After the loading screen is hidden, the owner of this class can call this to clean up any
+    /// After the application has stopped, the owner of this class can call this to clean up any
     /// used resources such as the cover.
     void Clear();
 
@@ -47,6 +47,10 @@ public:
 
     /// Hides the LoadingScreen with a fade out effect
     void OnLoadComplete();
+
+    /// Turns the screen into the one shown while the application closes, with the name and cover
+    /// from Prepare. Call before showing it.
+    void ShowClosing();
 
 signals:
     void LoadProgress(VideoCore::LoadCallbackStage stage, std::size_t value, std::size_t total);
@@ -74,6 +78,8 @@ private:
     /// there is no translation
 
     double FillTarget() const;
+    /// When the bar's current sweep began, or -1 while the bar shows progress instead
+    double SweepStart(double t) const;
     QString StageText() const;
     QString PercentText() const;
     QString DetailText(double t) const;
@@ -97,6 +103,9 @@ private:
     Clock::time_point start_time;
     double prepare_ms = 0;   ///< When preparing began, for the bar's sweep
     double complete_ms = -1; ///< When loading completed, for closing the logo
+    double launch_ms = -1;   ///< When the fill gave way to the sweep, as the game starts or closes
+    double closing_ms = -1;  ///< When the application began closing
+    double fade_in_ms = 0;   ///< When the fade in from black began
     double exit_ms = -1;     ///< When the fade out began
 
     VideoCore::LoadCallbackStage stage;
