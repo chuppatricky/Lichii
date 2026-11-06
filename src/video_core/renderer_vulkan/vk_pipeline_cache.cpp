@@ -802,10 +802,10 @@ bool PreloadAllPipelines() {
     return all;
 }
 
-// How many graphics pipelines stay built before long-unused ones are destroyed. Ocarina of Time
-// uses about 3,000 in all, so with 24 GB of RAM or more none of its are evicted. On RADV (RX 7900
-// GRE) destroying 2,490 of them did not lower the process's memory use, so the budget for PCs
-// with less RAM is a precaution for drivers that hold more per pipeline.
+// How many graphics pipelines stay built before long-unused ones are destroyed. Ocarina of Time's
+// cache passed 4,800 pipelines after visiting a dozen areas. On RADV (RX 7900 GRE) destroying 2,490
+// of them did not lower the process's memory use, so the smaller budget for PCs with less RAM is
+// a precaution for drivers that hold more per pipeline.
 // EDEN_NX2_PIPELINE_KEEP=<count> sets it; 0 evicts every pipeline unused for 9000 frames.
 size_t PipelinesKept() {
     static const size_t keep = [] {
@@ -814,7 +814,7 @@ size_t PipelinesKept() {
         }
         constexpr u64 GiB = 1ULL << 30;
         const size_t kept =
-            Common::GetMemInfo().TotalPhysicalMemory >= 23 * GiB ? size_t{4096} : size_t{2048};
+            Common::GetMemInfo().TotalPhysicalMemory >= 23 * GiB ? size_t{8192} : size_t{4096};
         LOG_INFO(Render_Vulkan, "Keeping up to {} graphics pipelines built", kept);
         return kept;
     }();
