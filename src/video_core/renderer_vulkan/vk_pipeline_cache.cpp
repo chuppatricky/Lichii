@@ -445,6 +445,35 @@ bool DriverCachesPipelines(const Device& device) {
         return false;
     }
 }
+
+// AMD's Windows driver for the Radeon RX 5000/6000 (2.0.353, Vulkan 1.4.315) never finished
+// compiling Ocarina of Time's largest compute shader (f9ea14a22394f5b1, 1.3 MB of SPIR-V) and took
+// 281 s for another (eff3ccbe1438679d, 0.8 MB): the title screen froze. Logs from 2.0.388 and later
+// compile both. On older AMD proprietary drivers (Windows, or AMDGPU-PRO on Linux; not RADV or
+// AMDVLK), compute shaders this large are built without driver optimizations.
+// EDEN_NX2_AMD_SAFE_COMPILE=0 turns it off, =1 applies it to any AMD proprietary driver;
+// EDEN_NX2_AMD_SAFE_COMPILE_MIN_KIB sets the size (default 800 KiB, 0 for every compute shader).
+bool DisableDriverOptimization(const Device& device, size_t spirv_bytes) {
+    static const int mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_AMD_SAFE_COMPILE");
+        if (value == nullptr || value[0] == '\0') {
+            return -1; // auto
+        }
+        return value[0] == '0' ? 0 : 1;
+    }();
+    static const size_t min_bytes = [] {
+        const char* const value = std::getenv("EDEN_NX2_AMD_SAFE_COMPILE_MIN_KIB");
+        if (value != nullptr && value[0] >= '0' && value[0] <= '9') {
+            return static_cast<size_t>(std::strtoull(value, nullptr, 10)) * 1024;
+        }
+        return size_t{800} * 1024;
+    }();
+    if (mode == 0 || device.GetDriverID() != VK_DRIVER_ID_AMD_PROPRIETARY ||
+        spirv_bytes < min_bytes) {
+        return false;
+    }
+    return mode == 1 || device.GetDriverVersion() < VK_MAKE_API_VERSION(0, 2, 0, 388);
+}
 } // Anonymous namespace
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -1985,10 +2014,17 @@ ComputePipelineCacheEntry PipelineCache::CreateComputePipeline(
         spv_module.SetObjectNameEXT(name.c_str());
     }
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    const bool unoptimized = DisableDriverOptimization(device, code.size() * sizeof(u32));
+    if (unoptimized) {
+        LOG_WARNING(Render_Vulkan,
+                    "Compute shader {:016x} ({} KiB of SPIR-V) is built without driver "
+                    "optimizations on this AMD driver (EDEN_NX2_AMD_SAFE_COMPILE)",
+                    key.unique_hash, code.size() * sizeof(u32) / 1024);
+    }
     return {.pipeline = std::make_unique<ComputePipeline>(
                 device, scheduler, vulkan_pipeline_cache, descriptor_pool, guest_descriptor_queue,
                 descriptor_buffer_ring, thread_worker, statistics, &shader_notify, program.info,
-                std::move(spv_module), key.unique_hash)};
+                std::move(spv_module), key.unique_hash, unoptimized)};
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "Compute pipeline compilation failed shader={:#016x} pipeline={:#016x}: {}",
