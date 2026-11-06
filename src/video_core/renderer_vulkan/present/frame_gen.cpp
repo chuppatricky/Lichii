@@ -202,6 +202,10 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
         shaders.emplace(device);
     }
 
+    // Both settings can change mid-game (status bar button): LSFG is unavailable only while it is
+    // the selected type and Lossless.dll's shaders didn't load.
+    const auto type = Settings::values.frame_gen_type.GetValue();
+    unavailable = type != Settings::FrameGenType::Fsr3 && !shaders->IsValid();
     if (unavailable || !Settings::values.frame_gen.GetValue()) {
         if (chain || fsr3_chain) {
             scheduler.Finish();
@@ -209,11 +213,6 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
             fsr3_chain.reset();
         }
         warm_streak = 0;
-        return;
-    }
-
-    if (!shaders->IsValid() && Settings::values.frame_gen_type.GetValue() != Settings::FrameGenType::Fsr3) {
-        unavailable = true;
         return;
     }
 
@@ -228,7 +227,7 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     const VkExtent2D extent{.width = frame->width, .height = frame->height};
     const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, extent);
     if ((!chain && !fsr3_chain) || built_extent.width != extent.width || built_extent.height != extent.height ||
-        built_format != format || built_flow_scale != flow_scale) {
+        built_format != format || built_flow_scale != flow_scale || built_type != type) {
         Rebuild(device, extent, format, flow_scale);
     }
 
@@ -240,7 +239,7 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     warm_streak = warm ? warm_streak + 1 : 0;
     generated = warm && warm_streak >= LSFG_RECURRENCE_FRAMES && plan.generations > 0;
 
-    const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+    const bool use_fsr3 = built_type == Settings::FrameGenType::Fsr3;
 
     if (use_fsr3 && fsr3_chain) {
         scheduler.RequestOutsideRenderPassOperationContext();
@@ -279,7 +278,7 @@ size_t FrameGen::GeneratedFrameCount() const {
 }
 
 void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t generation) {
-    const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+    const bool use_fsr3 = built_type == Settings::FrameGenType::Fsr3;
 
     if (use_fsr3 && fsr3_chain) {
         const f32 blend = static_cast<f32>(generation + 1) / static_cast<f32>(last_generations + 1);
@@ -309,8 +308,9 @@ void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format,
     fsr3_chain.reset();
 
     built_flow_scale = flow_scale;
+    built_type = Settings::values.frame_gen_type.GetValue();
 
-    if (Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3) {
+    if (built_type == Settings::FrameGenType::Fsr3) {
         fsr3_chain.emplace(device, memory_allocator, extent, format);
     } else {
         chain.emplace(device, memory_allocator, *shaders, extent, format, built_flow_scale);

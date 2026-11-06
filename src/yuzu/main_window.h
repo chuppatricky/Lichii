@@ -459,6 +459,7 @@ private:
     void UpdateFilterText();
     void UpdateAAText();
     void UpdatePostShaderText();
+    void UpdateFrameGenText();
     void UpdateVolumeUI();
     void UpdateStatusBar();
     void UpdateGPUAccuracyButton();
@@ -539,6 +540,7 @@ private:
     QPushButton* filter_status_button = nullptr;
     QPushButton* aa_status_button = nullptr;
     QPushButton* post_shader_status_button = nullptr;
+    QPushButton* frame_gen_status_button = nullptr;
     VolumeButton* volume_button = nullptr;
     QWidget* volume_popup = nullptr;
     QSlider* volume_slider = nullptr;

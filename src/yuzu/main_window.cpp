@@ -1096,6 +1096,61 @@ void MainWindow::InitializeWidgets() {
     statusBar()->insertPermanentWidget(0, post_shader_status_button);
 #endif
 
+    // Frame generation: click toggles it, right-click picks the multiplier and the type.
+    frame_gen_status_button = new QPushButton();
+    frame_gen_status_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
+    frame_gen_status_button->setFocusPolicy(Qt::NoFocus);
+    frame_gen_status_button->setCheckable(true);
+    frame_gen_status_button->setToolTip(
+        tr("Frame generation: inserts generated frames between the game's frames.\n"
+           "Click to turn it on or off; right-click for the multiplier and type.\n"
+           "Lossless Scaling (LSFG) needs Lossless.dll from Lossless Scaling in the "
+           "lossless folder."));
+    connect(frame_gen_status_button, &QPushButton::clicked, this, [this] {
+        Settings::values.frame_gen.SetValue(!Settings::values.frame_gen.GetValue());
+        UpdateFrameGenText();
+    });
+    UpdateFrameGenText();
+    frame_gen_status_button->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(frame_gen_status_button, &QPushButton::customContextMenuRequested,
+            [this](const QPoint& menu_location) {
+                QMenu context_menu;
+                const bool enabled = Settings::values.frame_gen.GetValue();
+                QAction* off = context_menu.addAction(tr("Off"), [this] {
+                    Settings::values.frame_gen.SetValue(false);
+                    UpdateFrameGenText();
+                });
+                off->setCheckable(true);
+                off->setChecked(!enabled);
+                for (u32 multiplier = Settings::MIN_FRAME_GEN_MULTIPLIER;
+                     multiplier <= Settings::MAX_FRAME_GEN_MULTIPLIER; ++multiplier) {
+                    QAction* action =
+                        context_menu.addAction(tr("%1x frames").arg(multiplier), [this, multiplier] {
+                            Settings::values.frame_gen_multiplier.SetValue(multiplier);
+                            Settings::values.frame_gen.SetValue(true);
+                            UpdateFrameGenText();
+                        });
+                    action->setCheckable(true);
+                    action->setChecked(enabled && Settings::FrameGenMultiplier() == multiplier);
+                }
+                context_menu.addSeparator();
+                const auto type = Settings::values.frame_gen_type.GetValue();
+                for (const auto& [value, text] :
+                     {std::pair{Settings::FrameGenType::Fsr3,
+                                tr("Optical Flow Interpolation (built-in)")},
+                      std::pair{Settings::FrameGenType::Lsfg, tr("Lossless Scaling (LSFG)")}}) {
+                    QAction* action = context_menu.addAction(text, [this, value] {
+                        Settings::values.frame_gen_type.SetValue(value);
+                        UpdateFrameGenText();
+                    });
+                    action->setCheckable(true);
+                    action->setChecked(type == value);
+                }
+                context_menu.exec(frame_gen_status_button->mapToGlobal(menu_location));
+                frame_gen_status_button->repaint();
+            });
+    statusBar()->insertPermanentWidget(0, frame_gen_status_button);
+
     // setup AA button
     aa_status_button = new QPushButton();
     aa_status_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
@@ -4746,6 +4801,22 @@ void MainWindow::UpdateAAText() {
                                   : aa_text.toUpper());
 }
 
+void MainWindow::UpdateFrameGenText() {
+    const bool enabled = Settings::values.frame_gen.GetValue();
+    frame_gen_status_button->setChecked(enabled);
+    if (!enabled) {
+        frame_gen_status_button->setText(tr("NO FG"));
+        return;
+    }
+    const QString name = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Lsfg
+                             ? tr("LSFG")
+                             : tr("FG");
+    const u32 target_rate = Settings::values.frame_gen_target_rate.GetValue();
+    frame_gen_status_button->setText(
+        target_rate != 0 ? tr("%1 %2 FPS").arg(name).arg(target_rate)
+                         : tr("%1 %2X").arg(name).arg(Settings::FrameGenMultiplier()));
+}
+
 #ifdef HAS_RESHADE
 void MainWindow::UpdatePostShaderText() {
     const bool enabled = Settings::values.post_shader_enabled.GetValue();
@@ -4786,6 +4857,7 @@ void MainWindow::UpdateStatusButtons() {
     UpdateDockedButton();
     UpdateFilterText();
     UpdateAAText();
+    UpdateFrameGenText();
     UpdateVolumeUI();
 }
 
