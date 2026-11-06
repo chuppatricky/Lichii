@@ -1291,6 +1291,19 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
     if (uses_descriptor_buffer) {
         flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
+    // EDEN_NX2_AMD_SAFE_COMPILE_GRAPHICS=1: on AMD's proprietary driver, graphics pipelines are
+    // built without driver optimizations. Opt-in experiment for Ocarina of Time's crash inside
+    // vkCreateGraphicsPipelines around the Deku Tree (Eglantine #618: amdvlk64.dll access
+    // violation on one fragment shader, RDNA1/2/4); GPU time may go up.
+    static const bool safe_graphics = [] {
+        const char* const value = std::getenv("EDEN_NX2_AMD_SAFE_COMPILE_GRAPHICS");
+        return value != nullptr && value[0] == '1';
+    }();
+    const bool unoptimized =
+        safe_graphics && device.GetDriverID() == VK_DRIVER_ID_AMD_PROPRIETARY;
+    if (unoptimized) {
+        flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    }
 
     std::string compile_shaders;
     if (LogPipelineCompiles()) {
@@ -1301,7 +1314,8 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
             }
         }
     }
-    const PipelineCompileLog compile_log{"graphics", std::move(compile_shaders)};
+    const PipelineCompileLog compile_log{unoptimized ? "graphics (unoptimized)" : "graphics",
+                                         std::move(compile_shaders)};
     pipeline = device.GetLogical().CreateGraphicsPipeline({
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
