@@ -119,6 +119,8 @@ add_library(video_core STATIC
     nx2_flash_trigger.cpp
     nx2_flash_trigger.h
     nx2_profile.h
+    nx2_perf.h
+    nx2_download_trace.h
     pending_maps.h
     present.h
     pte_kind.h
@@ -168,7 +170,9 @@ add_library(video_core STATIC
     renderer_vulkan/framebuffer_clear_layers.h
     renderer_vulkan/maxwell_to_vk.cpp
     renderer_vulkan/maxwell_to_vk.h
+    renderer_vulkan/pipeline_build.h
     renderer_vulkan/pipeline_helper.h
+    renderer_vulkan/pipeline_shader_emission.h
     renderer_vulkan/pipeline_statistics.cpp
     renderer_vulkan/pipeline_statistics.h
     renderer_vulkan/renderer_vulkan.h
@@ -194,6 +198,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_descriptor_pool.h
     renderer_vulkan/vk_fence_manager.cpp
     renderer_vulkan/vk_fence_manager.h
+    renderer_vulkan/vk_flash_watch.cpp
+    renderer_vulkan/vk_flash_watch.h
     renderer_vulkan/vk_frame_dump.cpp
     renderer_vulkan/vk_flash_detector.cpp
     renderer_vulkan/vk_flash_detector.h
@@ -223,6 +229,7 @@ add_library(video_core STATIC
     renderer_vulkan/vk_resolved_batch.h
     renderer_vulkan/vk_parallel_recorder.cpp
     renderer_vulkan/vk_parallel_recorder.h
+    renderer_vulkan/fragment_barrier_state.h
     renderer_vulkan/vk_shader_util.cpp
     renderer_vulkan/vk_shader_util.h
     renderer_vulkan/vk_staging_buffer_pool.cpp
@@ -302,6 +309,8 @@ add_library(video_core STATIC
     textures/decoders.h
     textures/texture.cpp
     textures/texture.h
+    textures/unswizzle_worker.cpp
+    textures/unswizzle_worker.h
     textures/workers.cpp
     textures/workers.h
     transform_feedback.cpp

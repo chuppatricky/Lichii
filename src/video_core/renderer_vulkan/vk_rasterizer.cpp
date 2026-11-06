@@ -63,6 +63,7 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_debug_control.h"
+#include "video_core/nx2_perf.h"
 #include "video_core/nx2_profile.h"
 
 namespace Vulkan {
@@ -289,7 +290,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
                      gpu.ShaderNotify()),
       accelerate_dma(buffer_cache, texture_cache, scheduler),
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
-      frame_dump(device, memory_allocator, scheduler), wfi_event(device.GetLogical().CreateEvent()) {
+      frame_dump(device, memory_allocator, scheduler),
+      flash_watch(device, memory_allocator, scheduler), wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
     VideoCommon::GpuSplit::Get().SetIdleHook(
         [](void* argument) { static_cast<Scheduler*>(argument)->FlushDeferred(); },
@@ -433,6 +435,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         const auto& regs = maxwell3d->regs;
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
+        if (frame_dump.Capturing()) {
+            frame_dump.NoteSkipped(false, ps != 0 ? ps : vs, regs.rt[0].Address(), reason);
+        }
         if (seen.size() < 64 && seen.emplace(vs, ps, reason).second) {
             LOG_WARNING(HW_GPU, "Draw skipped ({}): vs={:#x} ps={:#x} rt0={:#x} {}x{}", reason, vs, ps,
                         regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height);
@@ -487,23 +492,25 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
 
     TracePendingCpuWrites(false, pipeline->ShaderHashes());
     TraceRenderState(is_indexed, "configured", texture_cache.GetFramebuffer());
-    if (frame_dump.Capturing()) {
+    if (frame_dump.Capturing() || flash_watch.WatchesPasses()) {
         FrameDumpPass(texture_cache.GetFramebuffer());
+    }
+    if (flash_watch.WatchesPasses()) {
+        flash_watch.NoteDraw(pipeline->ShaderHashes());
+    }
+    if (frame_dump.Capturing()) {
         frame_dump.NoteDraw(pipeline->ShaderHashes());
-        bool recorded = false;
         if (frame_dump.CapturingSampled()) {
             boost::container::small_vector<FrameDump::Sampled, 16> sampled;
             for (const auto& image : pipeline->SampledImages()) {
                 sampled.push_back({image.stage, image.tic, &texture_cache.GetImageView(image.id),
                                    &texture_cache.GetSampler(image.sampler)});
             }
-            recorded = frame_dump.NoteSampled(sampled);
-        }
-        if (frame_dump.CapturingBuffers()) {
+            bool recorded = frame_dump.NoteSampled(sampled);
             recorded |= FrameDumpBuffers(false, pipeline->ShaderHashes());
-        }
-        if (recorded) {
-            scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
+            if (recorded) {
+                scheduler.RequestRenderpass(texture_cache.GetFramebuffer());
+            }
         }
     }
     if (VideoCommon::RenderTrace::SampleFrame(render_trace_frame) && render_trace_draws <= 2048) {
@@ -531,11 +538,40 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     query_cache.NotifySegment(true);
     HandleTransformFeedback();
     query_cache.CounterEnable(VideoCommon::QueryType::ZPassPixelCount64, maxwell3d->regs.zpass_pixel_count_enable);
+    const std::optional<u32> probe =
+        frame_dump.CapturingSampled() ? frame_dump.BeginProbe() : std::nullopt;
     {
         Profile::Scope scope{Profile::Zone::DrawRecord};
         scheduler.TraceGraphicsPipeline(pipeline->ShaderHashes());
         trace_draw_hashes = {pipeline->ShaderHashes()[1], pipeline->ShaderHashes()[5]};
         draw_func();
+    }
+    if (probe) {
+        const auto& draw_state = maxwell3d->draw_manager.draw_state;
+        const auto& regs = maxwell3d->regs;
+        const bool alpha_to_coverage = regs.anti_alias_alpha_control.alpha_to_coverage != 0;
+        const bool dynamic_alpha_to_coverage =
+            device.IsExtExtendedDynamicState3EnablesSupported() &&
+            device.SupportsDynamicState3AlphaToCoverageEnable() &&
+            pipeline->UsesExtendedDynamicState();
+        frame_dump.EndProbe(
+            *probe,
+            {
+                .mesh = mesh_draw,
+                .indirect = is_indirect,
+                .first = is_indexed ? draw_state.index_buffer.first : draw_state.vertex_buffer.first,
+                .elements = is_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count,
+                .instances = draw_state.instance_count,
+                .alpha_test = regs.alpha_test_enabled ? static_cast<u32>(regs.alpha_test_func) : 0,
+                .alpha_ref = regs.alpha_test_ref,
+                .alpha_to_coverage = alpha_to_coverage,
+                .host_alpha_to_coverage = dynamic_alpha_to_coverage
+                                              ? alpha_to_coverage_enable
+                                              : alpha_to_coverage && pipeline->SupportsAlphaToCoverage(),
+                .color0 = pipeline->SupportsAlphaToCoverage(),
+                .kill = pipeline->FragmentCanDiscard(),
+                .zero_handles = pipeline->ZeroTextureHandles(),
+            });
     }
     submitted = true;
     static u32 native_capture_count{};
@@ -814,12 +850,18 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         }
 
         if (mesh_draw) {
-            scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+            scheduler.Record([this, groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 cmdbuf.DrawMeshTasksEXT(groups, 1, 1);
             });
             return;
         }
         scheduler.Record([this, draw_params, hashes = trace_draw_hashes](vk::CommandBuffer cmdbuf) {
+            if (scheduler.GraphicsPipelineMissing()) {
+                return;
+            }
             scheduler.TraceGpuWork(
                 cmdbuf, hashes.first, hashes.second,
                 {draw_params.num_vertices, draw_params.num_instances, 0}, [&] {
@@ -879,8 +921,11 @@ void RasterizerVulkan::DrawIndirect() {
         const auto& buffer = indirect_buffer.first;
         const auto& offset = indirect_buffer.second;
         if (params.is_byte_count) {
-            scheduler.Record([buffer_obj = buffer->Handle(), offset,
+            scheduler.Record([this, buffer_obj = buffer->Handle(), offset,
                               stride = params.stride](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 cmdbuf.DrawIndirectByteCountEXT(1, 0, buffer_obj, offset, 0,
                                                 static_cast<u32>(stride));
             });
@@ -890,9 +935,12 @@ void RasterizerVulkan::DrawIndirect() {
             const auto count = buffer_cache.GetDrawIndirectCount();
             const auto& draw_buffer = count.first;
             const auto& offset_base = count.second;
-            scheduler.Record([draw_buffer_obj = draw_buffer->Handle(),
+            scheduler.Record([this, draw_buffer_obj = draw_buffer->Handle(),
                               buffer_obj = buffer->Handle(), offset_base, offset,
                               params](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 if (params.is_indexed) {
                     cmdbuf.DrawIndexedIndirectCount(
                         buffer_obj, offset, draw_buffer_obj, offset_base,
@@ -907,6 +955,9 @@ void RasterizerVulkan::DrawIndirect() {
         }
         scheduler.Record([this, buffer_obj = buffer->Handle(), offset, params,
                           hashes = trace_draw_hashes](vk::CommandBuffer cmdbuf) {
+            if (scheduler.GraphicsPipelineMissing()) {
+                return;
+            }
             scheduler.TraceGpuWork(cmdbuf, hashes.first, hashes.second, {}, [&] {
                 if (params.is_indexed) {
                     cmdbuf.DrawIndexedIndirect(buffer_obj, offset,
@@ -1102,8 +1153,11 @@ void RasterizerVulkan::DrawTexture() {
     const auto& sampler = texture_cache.GetSampler(draw_texture_state.src_sampler, false);
     const auto& texture = texture_cache.GetImageView(draw_texture_state.src_texture);
     const auto* framebuffer = texture_cache.GetFramebuffer();
-    if (frame_dump.Capturing()) {
+    if (frame_dump.Capturing() || flash_watch.WatchesPasses()) {
         FrameDumpPass(framebuffer);
+    }
+    if (flash_watch.WatchesPasses()) {
+        flash_watch.NoteDraw({});
     }
 
     const bool src_rescaling = texture_cache.IsRescaling() && texture.IsRescaled();
@@ -1158,7 +1212,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     std::scoped_lock lock{texture_cache.mutex};
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
-    if (frame_dump.Capturing()) {
+    if (frame_dump.Capturing() || flash_watch.WatchesPasses()) {
         FrameDumpPass(framebuffer);
     }
     const VkExtent2D render_area = framebuffer->RenderArea();
@@ -1371,8 +1425,23 @@ void RasterizerVulkan::DispatchCompute() {
         frame_dump.EndPass();
         frame_dump.DrainIfFull();
     }
+    if (flash_watch.WatchesPasses()) {
+        flash_watch.EndPass();
+    }
 
-    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};
+    ComputePipeline* const pipeline{[&] {
+        try {
+            return pipeline_cache.CurrentComputePipeline();
+        } catch (const Shader::Exception& error) {
+            if (frame_dump.Capturing()) {
+                frame_dump.NoteSkipped(true,
+                                       kepler_compute->regs.code_loc.Address() +
+                                           kepler_compute->launch_description.program_start,
+                                       0, error.what());
+            }
+            throw;
+        }
+    }()};
     if (!pipeline) {
         if (kepler_compute->IsNativeMode()) throw Shader::RuntimeError("Native compute pipeline unavailable");
         return;
@@ -1392,14 +1461,19 @@ void RasterizerVulkan::DispatchCompute() {
         return;
     }
     SCOPE_EXIT {
-        if (!frame_dump.Capturing()) {
+        if (!frame_dump.Capturing() && !flash_watch.WatchesPasses()) {
             return;
         }
         boost::container::small_vector<ImageView*, 8> written;
         for (const VideoCommon::ImageViewId id : pipeline->WrittenImages()) {
             written.push_back(&texture_cache.GetImageView(id));
         }
-        frame_dump.CaptureDispatch(pipeline->ShaderHash(), written);
+        if (frame_dump.Capturing()) {
+            frame_dump.CaptureDispatch(pipeline->ShaderHash(), written);
+        }
+        if (flash_watch.WatchesPasses()) {
+            flash_watch.NoteDispatch(pipeline->ShaderHash(), written);
+        }
     };
     TracePendingCpuWrites(true, std::array{pipeline->ShaderHash()});
     if (frame_dump.CapturingSampled()) {
@@ -1409,14 +1483,12 @@ void RasterizerVulkan::DispatchCompute() {
                                &texture_cache.GetSampler(image.sampler)});
         }
         frame_dump.NoteDispatchSampled(pipeline->ShaderHash(), sampled);
-    }
-    if (frame_dump.CapturingBuffers()) {
         FrameDumpBuffers(true, std::array{pipeline->ShaderHash()});
     }
 
     const auto& qmd{kepler_compute->launch_description};
     auto indirect_address = kepler_compute->GetIndirectComputeAddress();
-    if (frame_dump.CapturingBuffers()) {
+    if (frame_dump.CapturingSampled()) {
         std::optional<std::array<u32, 3>> indirect_grid;
         if (indirect_address) {
             indirect_grid = std::array{gpu_memory->Read<u32>(*indirect_address),
@@ -1519,7 +1591,10 @@ void Vulkan::RasterizerVulkan::DisableGraphicsUniformBuffer(size_t stage, u32 in
 void RasterizerVulkan::FlushAll() {}
 
 void RasterizerVulkan::SubmitNx2ListCopies() {
-    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) && !scheduler.DeferFlush()) {
+    // Submitted at once: ReadGpuWrittenCommands waits on these copies, so they can't sit out
+    // the longer DeferFlush interval (#161).
+    if (buffer_cache.Nx2CopyListPages(scheduler.CurrentTick()) &&
+        (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FenceFlush) || !scheduler.DeferFlush())) {
         scheduler.Flush();
     }
 }
@@ -1541,6 +1616,12 @@ VideoCore::RasterizerInterface::GpuWrittenList RasterizerVulkan::ReadGpuWrittenC
 
 void RasterizerVulkan::NoteGpuWrittenCommandListSynced(DAddr page) {
     buffer_cache.Nx2NoteListSynced(page);
+}
+
+void RasterizerVulkan::FlushGpuWrittenCommandListPages(std::span<const DAddr> pages) {
+    gpu.InvalidateGPUCache();
+    std::scoped_lock lock{buffer_cache.mutex};
+    buffer_cache.Nx2FlushListPages(pages);
 }
 
 void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
@@ -1794,7 +1875,9 @@ void RasterizerVulkan::WaitForIdle() {
 }
 
 void RasterizerVulkan::FragmentBarrier() {
-    if (device.IsMoltenVK()) {
+    // The next draw breaks the render pass only if it reads what this one wrote (#161): Ocarina
+    // ended ~5,900 render passes a second here.
+    if (device.IsMoltenVK() || VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::FragmentBarrier)) {
         scheduler.DeferFragmentBarrier();
         return;
     }
@@ -1957,7 +2040,14 @@ void RasterizerVulkan::FrameDumpPass(const Framebuffer* framebuffer) {
             colors[slot] = &texture_cache.GetImageView(ids[slot]);
         }
     }
-    if (frame_dump.BeginPass(framebuffer, colors)) {
+    bool recorded = false;
+    if (frame_dump.Capturing()) {
+        recorded |= frame_dump.BeginPass(framebuffer, colors);
+    }
+    if (flash_watch.WatchesPasses()) {
+        recorded |= flash_watch.BeginPass(framebuffer, colors);
+    }
+    if (recorded) {
         scheduler.RequestRenderpass(framebuffer);
     }
 }
@@ -1968,8 +2058,10 @@ void RasterizerVulkan::TickFrame() {
     }
     if (VideoCore::Nx2Debug::HasRequests()) {
         if (auto capture = VideoCore::Nx2Debug::TakeCapture()) {
-            frame_dump.Arm(std::move(capture->directory), capture->sampled, capture->buffers,
-                           capture->id);
+            // This build keeps the EDEN_NX2_FRAME_DUMP capture (file or time trigger) only.
+            VideoCore::Nx2Debug::FinishCapture(
+                capture->id, {.error = "capture_frame is not available in this build; use "
+                                       "EDEN_NX2_FRAME_DUMP"});
         }
         if (const auto change = VideoCore::Nx2Debug::TakeRejectChange()) {
             pipeline_cache.RefreshDebugRejections(change->unrejected);
@@ -1993,6 +2085,7 @@ void RasterizerVulkan::TickFrame() {
         }
     }
     frame_dump.TickFrame();
+    flash_watch.TickFrame();
     ++render_trace_frame;
     render_trace_draws = 0;
     render_trace_clears = 0;
@@ -2188,6 +2281,9 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
         frame_dump.EndPass();
         frame_dump.CapturePresent(*image_view);
     }
+    if (flash_watch.Enabled()) {
+        flash_watch.NotePresent(*image_view);
+    }
 
     query_cache.NotifySegment(false);
 
@@ -2215,21 +2311,24 @@ void RasterizerVulkan::FlushWork() {
     static constexpr bool android = false;
 #endif // __ANDROID__
     const bool native = gpu_memory->UsesNativeTiling();
-    u32 budget = SubmissionPolicy::DefaultNativeBudget;
+    // The 128-draw native budget is tuned for MoltenVK; desktop Vulkan takes the legacy 4096 (#161).
+    const u32 default_native_budget =
+        (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::SubmitBudget) && !device.IsMoltenVK()) ? 4096U
+                                                                : SubmissionPolicy::DefaultNativeBudget;
+    u32 budget = default_native_budget;
     if (native && !android) {
-        static const u32 configured_budget = [] {
+        static const std::optional<u32> configured_budget = []() -> std::optional<u32> {
             if (const char* value = std::getenv("EDEN_NX2_FLUSH_DRAWS")) {
                 if (const auto parsed = SubmissionPolicy::ParseBudget(value)) {
-                    return *parsed;
+                    return parsed;
                 }
                 LOG_WARNING(Render_Vulkan,
-                            "Invalid EDEN_NX2_FLUSH_DRAWS; expected an integer from 1 to {}, "
-                            "using {}",
-                            (std::numeric_limits<u32>::max)(), SubmissionPolicy::DefaultNativeBudget);
+                            "Invalid EDEN_NX2_FLUSH_DRAWS; expected an integer from 1 to {}",
+                            (std::numeric_limits<u32>::max)());
             }
-            return SubmissionPolicy::DefaultNativeBudget;
+            return std::nullopt;
         }();
-        budget = configured_budget;
+        budget = configured_budget.value_or(default_native_budget);
     }
     u32 legacy_budget = 4096;
     if (!native && !android) {
@@ -2929,7 +3028,10 @@ void RasterizerVulkan::UpdateDepthClampEnable(Tegra::Engines::Maxwell3D::Regs& r
 }
 
 void RasterizerVulkan::UpdateAlphaToCoverageEnable(Tegra::Engines::Maxwell3D::Regs& regs) {
-    if (!state_tracker.TouchAlphaToCoverageEnable()) {
+    // The enable also depends on the pipeline writing colour 0, which the dirty flag does not
+    // track. EDEN_NX2_A2C_REFRESH=1 records it on every draw so it never outlives its pipeline.
+    static const bool refresh{std::getenv("EDEN_NX2_A2C_REFRESH") != nullptr};
+    if (!state_tracker.TouchAlphaToCoverageEnable() && !refresh) {
         return;
     }
     if (!device.SupportsDynamicState3AlphaToCoverageEnable()) {
@@ -2938,6 +3040,7 @@ void RasterizerVulkan::UpdateAlphaToCoverageEnable(Tegra::Engines::Maxwell3D::Re
     GraphicsPipeline* const pipeline = pipeline_cache.CurrentGraphicsPipeline();
     const bool enable = pipeline != nullptr && pipeline->SupportsAlphaToCoverage() &&
                         regs.anti_alias_alpha_control.alpha_to_coverage != 0;
+    alpha_to_coverage_enable = enable;
     scheduler.Record([enable](vk::CommandBuffer cmdbuf) {
         cmdbuf.SetAlphaToCoverageEnableEXT(enable ? VK_TRUE : VK_FALSE);
     });

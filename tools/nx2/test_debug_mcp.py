@@ -104,7 +104,7 @@ class AdapterTest(unittest.TestCase):
                  ["result"]["tools"]]
         self.assertEqual(names, ["capture_on_flash", "disarm", "status", "screenshot", "log_tail",
                                  "log_filter", "capture_frame",
-                                 "capture_image", "reject_shaders", "read_memory",
+                                 "capture_image", "reject_shaders", "sample", "read_memory",
                                  "search_memory", "read_gpu_memory", "input",
                                  "input_sequence"])
         self.assertEqual(self.adapter.handle({"id": 3, "method": "bogus"})["error"]["code"], -32601)
