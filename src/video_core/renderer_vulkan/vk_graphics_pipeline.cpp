@@ -1305,8 +1305,23 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         const char* const value = std::getenv("EDEN_NX2_AMD_SAFE_COMPILE_GRAPHICS");
         return value != nullptr && value[0] == '1';
     }();
-    const bool unoptimized =
-        safe_graphics && device.GetDriverID() == VK_DRIVER_ID_AMD_PROPRIETARY;
+    // Two RX 6000 PCs on AMD's 2.0.353 driver died inside vkCreateGraphicsPipelines while these
+    // Ocarina fragment shaders compiled (all four were in flight both times). Like the large
+    // compute shaders, they are built without optimizations under EDEN_NX2_AMD_SAFE_COMPILE's rule:
+    // drivers older than 2.0.388 by default, any AMD proprietary driver with =1, never with =0.
+    static constexpr std::array<u64, 4> CRASHING_FRAGMENTS{
+        0x6c85c9f06e1d689bULL, 0x3d513889e2913d1cULL, 0x3c2193d0166610b3ULL, 0x4e54644c03577013ULL};
+    static const int safe_mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_AMD_SAFE_COMPILE");
+        return value == nullptr || value[0] == '\0' ? -1 : (value[0] == '0' ? 0 : 1);
+    }();
+    const bool amd_proprietary = device.GetDriverID() == VK_DRIVER_ID_AMD_PROPRIETARY;
+    const bool crashing_fragment =
+        amd_proprietary && safe_mode != 0 &&
+        (safe_mode == 1 || device.GetDriverVersion() < VK_MAKE_API_VERSION(0, 2, 0, 388)) &&
+        std::ranges::find(CRASHING_FRAGMENTS, key.unique_hashes[Maxwell::MaxShaderProgram - 1]) !=
+            CRASHING_FRAGMENTS.end();
+    const bool unoptimized = amd_proprietary && (safe_graphics || crashing_fragment);
     if (unoptimized) {
         flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
     }
