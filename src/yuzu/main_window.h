@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <optional>
 
@@ -530,6 +531,9 @@ private:
     QLabel* res_scale_label = nullptr;
     QLabel* emu_speed_label = nullptr;
     QLabel* game_fps_label = nullptr;
+    QLabel* display_fps_label = nullptr;
+    u64 display_frames_seen{};
+    std::chrono::steady_clock::time_point display_frames_time{};
     QLabel* emu_frametime_label = nullptr;
     QLabel* tas_label = nullptr;
     QLabel* firmware_label = nullptr;

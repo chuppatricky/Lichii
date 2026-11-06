@@ -262,6 +262,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         frame_gen.GenerateInto(device, generated, generation);
         scheduler.Flush(*generated->render_ready);
         present_manager.Present(generated);
+        presented_frames.fetch_add(1, std::memory_order_relaxed);
     }
 #endif
 
@@ -273,6 +274,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     const auto presenting = trace ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point{};
     present_manager.Present(frame);
+    presented_frames.fetch_add(1, std::memory_order_relaxed);
     const auto presented = trace ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
 #ifdef HAS_LSFG

@@ -981,13 +981,18 @@ void MainWindow::InitializeWidgets() {
     game_fps_label = new QLabel();
     game_fps_label->setToolTip(tr("How many frames per second the game is currently displaying. "
                                   "This will vary from game to game and scene to scene."));
+    display_fps_label = new QLabel();
+    display_fps_label->setToolTip(
+        tr("How many frames per second are sent to the display, including the frames frame "
+           "generation adds. Without frame generation this matches the game's FPS; with it on, "
+           "it should be higher, up to your monitor's refresh rate."));
     emu_frametime_label = new QLabel();
     emu_frametime_label->setToolTip(
         tr("Time taken to emulate a Switch frame, not counting framelimiting or v-sync. For "
            "full-speed emulation this should be at most 16.67 ms."));
 
     for (auto& label : {shader_building_label, res_scale_label, emu_speed_label, game_fps_label,
-                        emu_frametime_label}) {
+                        display_fps_label, emu_frametime_label}) {
         label->setVisible(false);
         label->setFrameStyle(QFrame::NoFrame);
         label->setContentsMargins(4, 0, 4, 0);
@@ -2370,6 +2375,8 @@ void MainWindow::OnEmulationStopped() {
     res_scale_label->setVisible(false);
     emu_speed_label->setVisible(false);
     game_fps_label->setVisible(false);
+    display_fps_label->setVisible(false);
+    display_frames_time = {};
     emu_frametime_label->setVisible(false);
     renderer_status_button->setEnabled(!UISettings::values.has_broken_vulkan);
     refresh_button->setEnabled(true);
@@ -4756,11 +4763,32 @@ void MainWindow::UpdateStatusBar() {
 
     game_fps_label->setText(fpsText);
 
+    // Frames sent to the display per second, over at least a second (the bar updates twice a second).
+    const u64 display_frames = QtCommon::system->GPU().Renderer().PresentedFrameCount();
+    const auto now = std::chrono::steady_clock::now();
+    if (display_frames_time == std::chrono::steady_clock::time_point{} ||
+        display_frames < display_frames_seen) {
+        display_fps_label->clear();
+        display_frames_seen = display_frames;
+        display_frames_time = now;
+    } else if (const double seconds =
+                   std::chrono::duration<double>(now - display_frames_time).count();
+               seconds >= 1.0) {
+        display_fps_label->setText(
+            tr("Display: %1 FPS")
+                .arg(std::round(static_cast<double>(display_frames - display_frames_seen) /
+                                seconds),
+                     0, 'f', 0));
+        display_frames_seen = display_frames;
+        display_frames_time = now;
+    }
+
     emu_frametime_label->setText(tr("Frame: %1 ms").arg(results.frametime * 1000.0, 0, 'f', 2));
 
     res_scale_label->setVisible(true);
     emu_speed_label->setVisible(!Settings::values.use_multi_core.GetValue());
     game_fps_label->setVisible(true);
+    display_fps_label->setVisible(!display_fps_label->text().isEmpty());
     emu_frametime_label->setVisible(true);
     firmware_label->setVisible(false);
 }
