@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -313,6 +315,7 @@ void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t gen
 
         scheduler.RequestOutsideRenderPassOperationContext();
         fsr3_chain->Generate(device, scheduler, *destination->storage_view, blend, flow_scale);
+        DumpGeneratedFrame(destination, generation);
     } else if (chain) {
         chain->SetTarget(device, last_generations, generation, destination->index,
                          *destination->storage_view);
@@ -347,6 +350,49 @@ void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format,
     frame_count = 0;
     warm_streak = 0;
     generated = false;
+}
+
+// Debug: with EDEN_NX2_FG_DUMP_DIR=<folder>, creating <folder>/fgdump.now saves the built-in frame
+// generation's frames for the next 6 game frames there as PPM images: for each, the older game
+// frame (a), the generated frames (b, in order) and the newer game frame (c).
+void FrameGen::DumpGeneratedFrame(Frame* destination, size_t generation) {
+    static const char* const dump_dir = std::getenv("EDEN_NX2_FG_DUMP_DIR");
+    if (dump_dir == nullptr || !fsr3_chain) {
+        return;
+    }
+    const std::filesystem::path directory{dump_dir};
+    if (generation == 0 && fsr3_dumps_left == 0) {
+        std::error_code ec;
+        if (std::filesystem::remove(directory / "fgdump.now", ec)) {
+            fsr3_dumps_left = 6;
+        }
+    }
+    if (fsr3_dumps_left == 0) {
+        return;
+    }
+    const VkExtent2D extent{.width = destination->width, .height = destination->height};
+    const VkDeviceSize size = static_cast<VkDeviceSize>(extent.width) * extent.height * COLOR_CHANNELS;
+    const auto dump = [&](const std::string& name, VkImage image) {
+        vk::Buffer buffer = CreateWrappedBuffer(memory_allocator, size, MemoryUsage::Download);
+        scheduler.RequestOutsideRenderPassOperationContext();
+        scheduler.Record([image, dst = *buffer, extent](vk::CommandBuffer cmdbuf) {
+            DownloadColorImage(cmdbuf, image, dst,
+                               VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1});
+        });
+        scheduler.Finish();
+        buffer.Invalidate();
+        WriteColorPpm(directory / (name + ".ppm"), extent, buffer.Mapped(), IsBlueFirst(built_format));
+    };
+    const std::string prefix = fmt::format("fg{:03}_", fsr3_dump_index);
+    if (generation == 0) {
+        dump(prefix + "a", fsr3_chain->HistoryImage());
+        dump(prefix + "c", fsr3_chain->CurrentImage());
+    }
+    dump(prefix + "b" + std::to_string(generation), *destination->image);
+    if (generation + 1 >= last_generations) {
+        --fsr3_dumps_left;
+        ++fsr3_dump_index;
+    }
 }
 
 void FrameGen::DumpDebugImages(u64 count) {

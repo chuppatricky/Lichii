@@ -40,6 +40,7 @@ public:
 private:
     void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale);
     void DumpDebugImages(u64 count);
+    void DumpGeneratedFrame(Frame* destination, size_t generation);
 
     MemoryAllocator& memory_allocator;
     Scheduler& scheduler;
@@ -61,6 +62,8 @@ private:
     bool generated{};
     bool unavailable{};
     bool dumped{};
+    u32 fsr3_dumps_left{}; ///< game frames whose generated frames are still to be dumped
+    u32 fsr3_dump_index{};
     u32 frames_without_storage{};
     u32 reported{}; ///< REPORTED_* log lines already written since frame generation was turned on
     static constexpr u32 REPORTED_NO_LSFG = 1U << 0;

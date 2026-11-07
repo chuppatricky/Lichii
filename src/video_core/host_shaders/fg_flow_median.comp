@@ -1,0 +1,46 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: 3x3 median of the finest motion field, per component, to drop stray vectors.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D Vectors;
+layout(binding = 1, rg16f) uniform writeonly image2D OutVectors;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 size;
+};
+
+float Median9(float v[9]) {
+    for (int i = 1; i < 9; ++i) {
+        const float key = v[i];
+        int j = i - 1;
+        while (j >= 0 && v[j] > key) {
+            v[j + 1] = v[j];
+            --j;
+        }
+        v[j + 1] = key;
+    }
+    return v[4];
+}
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, size))) {
+        return;
+    }
+    const ivec2 last = size - 1;
+    float xs[9];
+    float ys[9];
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const vec2 v = texelFetch(Vectors, clamp(p + ivec2(x, y), ivec2(0), last), 0).xy;
+            xs[(y + 1) * 3 + x + 1] = v.x;
+            ys[(y + 1) * 3 + x + 1] = v.y;
+        }
+    }
+    imageStore(OutVectors, p, vec4(Median9(xs), Median9(ys), 0.0, 0.0));
+}

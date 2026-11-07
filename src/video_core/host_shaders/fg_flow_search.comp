@@ -1,0 +1,59 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: full motion search on the coarsest brightness level. For each texel, every
+// offset within `radius` texels is tried; the cost is the summed brightness difference over a 5x5
+// window plus a small penalty on the offset's length, so flat areas keep zero motion. The result is
+// the offset from the texel to where its content was in the previous frame, in texels.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D CurrentLuma;
+layout(binding = 1) uniform sampler2D PreviousLuma;
+layout(binding = 2, rg16f) uniform writeonly image2D OutVectors;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 size;
+    int radius;
+    float lambda;
+};
+
+const int WIN = 2;
+const int TAPS = (2 * WIN + 1) * (2 * WIN + 1);
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, size))) {
+        return;
+    }
+    const ivec2 last = size - 1;
+    float current[TAPS];
+    for (int y = -WIN; y <= WIN; ++y) {
+        for (int x = -WIN; x <= WIN; ++x) {
+            const ivec2 q = clamp(p + ivec2(x, y), ivec2(0), last);
+            current[(y + WIN) * (2 * WIN + 1) + x + WIN] = texelFetch(CurrentLuma, q, 0).r;
+        }
+    }
+    float best = 1e30;
+    ivec2 best_vector = ivec2(0);
+    for (int vy = -radius; vy <= radius; ++vy) {
+        for (int vx = -radius; vx <= radius; ++vx) {
+            const ivec2 v = ivec2(vx, vy);
+            float cost = lambda * float(TAPS) * length(vec2(v));
+            for (int y = -WIN; y <= WIN; ++y) {
+                for (int x = -WIN; x <= WIN; ++x) {
+                    const ivec2 q = clamp(p + ivec2(x, y), ivec2(0), last);
+                    const float previous = texelFetch(PreviousLuma, clamp(q + v, ivec2(0), last), 0).r;
+                    cost += abs(current[(y + WIN) * (2 * WIN + 1) + x + WIN] - previous);
+                }
+            }
+            if (cost < best) {
+                best = cost;
+                best_vector = v;
+            }
+        }
+    }
+    imageStore(OutVectors, p, vec4(vec2(best_vector), 0.0, 0.0));
+}

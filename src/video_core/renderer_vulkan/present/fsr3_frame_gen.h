@@ -15,17 +15,14 @@ namespace Vulkan {
 class Device;
 class Scheduler;
 
-/// AMD FidelityFX Super Resolution 3 (FSR 3) Frame Generation pipeline.
-/// Uses compute-based optical flow and bilateral frame interpolation
-/// to synthesize intermediate frames without requiring engine motion vectors.
-///
-/// Optimizations:
-///  - Quarter-resolution optical flow (16├ù fewer compute invocations)
-///  - Shared-memory tile caching in both shaders
-///  - Early-out for static pixels (skip diamond search)
-///  - Duplicate-frame detection (skip optical flow entirely)
-///  - Precise pipeline barriers instead of full-pipeline TransitionImageLayout
-///  - Descriptor-write caching (only update when image views change)
+/// The built-in frame generation ("FSR3" in the settings; it doesn't use AMD's FSR 3 code).
+/// Estimates motion between the last two game frames from the picture alone and builds the frames
+/// between them:
+///  - each game frame: a brightness pyramid at 1/8, 1/16 and 1/32 of the presented size, a full
+///    search at 1/32 (+-6 texels, so +-192 pixels), refinement at 1/16 and 1/8 from the median
+///    coarse vectors, and a 3x3 median of the result;
+///  - each generated frame: per pixel, the vector among a few nearby field vectors and zero whose
+///    previous-frame and current-frame samples agree best, then those two samples blended.
 class Fsr3FrameGen {
 public:
     explicit Fsr3FrameGen(const Device& device, MemoryAllocator& memory_allocator,
@@ -42,53 +39,80 @@ public:
         return m_initialized && m_has_history;
     }
 
+    /// The older and the newer of the two game frames being interpolated (debug dumps).
+    [[nodiscard]] VkImage HistoryImage() const {
+        return *m_history.image;
+    }
+    [[nodiscard]] VkImage CurrentImage() const {
+        return *m_current.image;
+    }
+
+    /// Presented pixels per texel of each pyramid level, finest first.
+    static constexpr std::array<u32, 3> LevelFactors{8, 16, 32};
+
 private:
+    struct Pass {
+        vk::DescriptorSetLayout set_layout;
+        vk::PipelineLayout pipeline_layout;
+        vk::Pipeline pipeline;
+    };
+    struct OwnedImage {
+        vk::Image image;
+        vk::ImageView view;
+        VkExtent2D extent{};
+    };
+
     void CreateResources(const Device& device);
-    void CreateShaders(const Device& device);
-    void CreatePipelines(const Device& device);
+    void CreatePasses(const Device& device);
+    void WriteFlowDescriptors(const Device& device);
+    VkDescriptorSet InterpolationSet(const Device& device, Scheduler& scheduler,
+                                     VkImageView destination);
+    void RecordPyramid(vk::CommandBuffer cmdbuf, size_t parity) const;
 
     MemoryAllocator& m_allocator;
     VkExtent2D m_extent;
-    VkExtent2D m_flow_extent;   // half-res for optical flow
     VkFormat m_format;
 
     vk::Sampler m_linear_sampler;
-    vk::ShaderModule m_flow_shader;
-    vk::ShaderModule m_interp_shader;
+    std::array<vk::ShaderModule, 5> m_shaders;
 
-    vk::DescriptorSetLayout m_flow_desc_layout;
-    vk::PipelineLayout m_flow_pipe_layout;
-    vk::Pipeline m_flow_pipeline;
-
-    vk::DescriptorSetLayout m_interp_desc_layout;
-    vk::PipelineLayout m_interp_pipe_layout;
-    vk::Pipeline m_interp_pipeline;
+    Pass m_down;
+    Pass m_search;
+    Pass m_refine;
+    Pass m_median;
+    Pass m_interp;
 
     vk::DescriptorPool m_desc_pool;
-    vk::DescriptorSets m_flow_desc_sets;
-    vk::DescriptorSets m_interp_desc_sets;
+    std::array<vk::DescriptorSets, 2> m_down_sets;   // per pyramid parity, one per level
+    std::array<vk::DescriptorSets, 2> m_search_sets; // per parity
+    std::array<vk::DescriptorSets, 2> m_refine_sets; // per parity, finest level first
+    vk::DescriptorSets m_median_set;
 
-    // History and motion vector images
-    vk::Image m_history_image;
-    vk::ImageView m_history_view;
+    // Generated frames go to the presented frames' images, which rotate: one set per image so a
+    // set is never rewritten while an earlier frame's commands may still use it.
+    struct InterpSet {
+        VkImageView destination;
+        vk::DescriptorSets set;
+    };
+    std::vector<InterpSet> m_interp_sets;
 
-    vk::Image m_motion_image;
-    vk::ImageView m_motion_view;
+    // The last two game frames: history is the older one.
+    OwnedImage m_history;
+    OwnedImage m_current;
 
-    // Store the last current-frame view for descriptor caching
-    vk::Image m_current_image;
-    vk::ImageView m_current_view;
+    // Brightness pyramids of the last two game frames (swapped each frame) and motion fields.
+    std::array<std::array<OwnedImage, 3>, 2> m_pyramid;
+    std::array<OwnedImage, 3> m_vectors;
+    OwnedImage m_final_vectors;
 
+    size_t m_parity{};
     bool m_initialized{};
     bool m_has_history{};
+    bool m_layouts_ready{};
 
-    // Duplicate-frame detection: skip optical flow when the frame hasn't changed
+    // Duplicate-frame detection: skip the flow when the frame hasn't changed
     u64 m_last_frame_count{};
     bool m_flow_valid{};
-
-    // Descriptor caching: only update when views change
-    VkImageView m_cached_flow_current_view{VK_NULL_HANDLE};
-    VkImageView m_cached_interp_dest_view{VK_NULL_HANDLE};
 };
 
 } // namespace Vulkan

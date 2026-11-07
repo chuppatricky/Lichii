@@ -1,0 +1,37 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: one level of the brightness pyramid the motion search runs on. Each destination
+// texel is the mean of a factor x factor block of source texels (factor even), read as bilinear taps
+// that fall between 2x2 source texels; from the colour frame it stores the block's luma.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D Source;
+layout(binding = 1, r16f) uniform writeonly image2D Destination;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 dst_size;
+    vec2 inv_src_size;
+    int factor;
+    int from_rgb;
+};
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, dst_size))) {
+        return;
+    }
+    const int taps = factor / 2;
+    float sum = 0.0;
+    for (int y = 0; y < taps; ++y) {
+        for (int x = 0; x < taps; ++x) {
+            const vec2 pos = vec2(p * factor + ivec2(2 * x + 1, 2 * y + 1)) * inv_src_size;
+            const vec4 color = texture(Source, pos);
+            sum += from_rgb != 0 ? dot(color.rgb, vec3(0.299, 0.587, 0.114)) : color.r;
+        }
+    }
+    imageStore(Destination, p, vec4(sum / float(taps * taps)));
+}

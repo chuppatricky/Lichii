@@ -1,0 +1,98 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+// Frame generation: refines the motion of the next coarser level at this level's resolution. The
+// candidates are the 3x3-median coarse vectors under the texel and its four neighbours (scaled to
+// this level), and zero, each tried with offsets of -1..1 texel; the cost is the same 5x5 window
+// brightness difference and length penalty as the full search.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D CurrentLuma;
+layout(binding = 1) uniform sampler2D PreviousLuma;
+layout(binding = 2) uniform sampler2D CoarseVectors;
+layout(binding = 3, rg16f) uniform writeonly image2D OutVectors;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 size;
+    ivec2 coarse_size;
+    int ratio;
+    float lambda;
+};
+
+const int WIN = 2;
+const int TAPS = (2 * WIN + 1) * (2 * WIN + 1);
+
+float Median9(float v[9]) {
+    for (int i = 1; i < 9; ++i) {
+        const float key = v[i];
+        int j = i - 1;
+        while (j >= 0 && v[j] > key) {
+            v[j + 1] = v[j];
+            --j;
+        }
+        v[j + 1] = key;
+    }
+    return v[4];
+}
+
+ivec2 CoarseMedian(ivec2 c) {
+    const ivec2 last = coarse_size - 1;
+    c = clamp(c, ivec2(0), last);
+    float xs[9];
+    float ys[9];
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const vec2 v = texelFetch(CoarseVectors, clamp(c + ivec2(x, y), ivec2(0), last), 0).xy;
+            xs[(y + 1) * 3 + x + 1] = v.x;
+            ys[(y + 1) * 3 + x + 1] = v.y;
+        }
+    }
+    return ivec2(round(vec2(Median9(xs), Median9(ys))));
+}
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, size))) {
+        return;
+    }
+    const ivec2 last = size - 1;
+    float current[TAPS];
+    for (int y = -WIN; y <= WIN; ++y) {
+        for (int x = -WIN; x <= WIN; ++x) {
+            const ivec2 q = clamp(p + ivec2(x, y), ivec2(0), last);
+            current[(y + WIN) * (2 * WIN + 1) + x + WIN] = texelFetch(CurrentLuma, q, 0).r;
+        }
+    }
+    const ivec2 coarse = p / ratio;
+    const ivec2 bases[6] = ivec2[](CoarseMedian(coarse) * ratio,
+                                   CoarseMedian(coarse + ivec2(0, -1)) * ratio,
+                                   CoarseMedian(coarse + ivec2(0, 1)) * ratio,
+                                   CoarseMedian(coarse + ivec2(-1, 0)) * ratio,
+                                   CoarseMedian(coarse + ivec2(1, 0)) * ratio, ivec2(0));
+    float best = 1e30;
+    ivec2 best_vector = ivec2(0);
+    for (int b = 0; b < 6; ++b) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const ivec2 v = bases[b] + ivec2(dx, dy);
+                float cost = lambda * float(TAPS) * length(vec2(v));
+                for (int y = -WIN; y <= WIN; ++y) {
+                    for (int x = -WIN; x <= WIN; ++x) {
+                        const ivec2 q = clamp(p + ivec2(x, y), ivec2(0), last);
+                        const float previous =
+                            texelFetch(PreviousLuma, clamp(q + v, ivec2(0), last), 0).r;
+                        cost += abs(current[(y + WIN) * (2 * WIN + 1) + x + WIN] - previous);
+                    }
+                }
+                if (cost < best) {
+                    best = cost;
+                    best_vector = v;
+                }
+            }
+        }
+    }
+    imageStore(OutVectors, p, vec4(vec2(best_vector), 0.0, 0.0));
+}
