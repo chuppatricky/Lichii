@@ -5339,7 +5339,11 @@ void MainWindow::UpdateUITheme() {
     AdjustLinkColor();
 #else
     if (current_theme == QStringLiteral("default") || current_theme == QStringLiteral("colorful")) {
-        QIcon::setThemeName(current_theme == QStringLiteral("colorful") ? current_theme : startup_icon_theme);
+        // In dark mode the colorful theme uses the dark style, so it takes colorful_dark's light
+        // icons too (the black refresh icon was hard to see next to the status bar's white text).
+        QIcon::setThemeName(current_theme == QStringLiteral("colorful")
+                                ? (isDarkMode() ? QStringLiteral("colorful_dark") : current_theme)
+                                : startup_icon_theme);
         QIcon::setThemeSearchPaths(QStringList(default_theme_paths));
         if (isDarkMode()) {
             current_theme = QStringLiteral("default_dark");
