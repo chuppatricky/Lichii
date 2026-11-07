@@ -3,14 +3,21 @@
 
 #include "yuzu/testbuild_updater.h"
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
 #include <QCoreApplication>
 #include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -21,7 +28,9 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QTextBrowser>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QWidget>
 
 #include "common/logging.h"
@@ -104,6 +113,7 @@ void TestbuildUpdater::OnReleases(QNetworkReply* reply) {
         return;
     }
     std::optional<Update> best;
+    std::vector<std::pair<u32, QString>> changes; // every newer release's notes
     for (const QJsonValue& value : document.array()) {
         const QJsonObject release = value.toObject();
         if (release.value(QStringLiteral("draft")).toBool()) {
@@ -111,7 +121,11 @@ void TestbuildUpdater::OnReleases(QNetworkReply* reply) {
         }
         const QString tag = release.value(QStringLiteral("tag_name")).toString();
         const auto version = TestbuildRelease::Version(tag.toStdString());
-        if (!version || *version <= current_version || (best && *version <= best->version)) {
+        if (!version || *version <= current_version) {
+            continue;
+        }
+        changes.emplace_back(*version, release.value(QStringLiteral("body")).toString());
+        if (best && *version <= best->version) {
             continue;
         }
         for (const QJsonValue& asset_value : release.value(QStringLiteral("assets")).toArray()) {
@@ -139,6 +153,13 @@ void TestbuildUpdater::OnReleases(QNetworkReply* reply) {
     }
     LOG_INFO(Frontend, "Update check: v{} is available ({})", best->version,
              best->asset_name.toStdString());
+    std::sort(changes.begin(), changes.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    best->notes.clear();
+    for (const auto& [version, body] : changes) {
+        best->notes += QStringLiteral("# v%1\n\n%2\n\n").arg(version).arg(
+            body.trimmed().isEmpty() ? tr("No notes for this version.") : body.trimmed());
+    }
     pending = std::move(best);
     if (!is_busy()) {
         Ask();
@@ -157,13 +178,20 @@ void TestbuildUpdater::Ask() {
     }
     asked = true;
     const Update& update = *pending;
-    QMessageBox box{parent_widget};
-    box.setIcon(QMessageBox::Information);
-    box.setWindowTitle(tr("Update available"));
-    box.setText(tr("<b>chuppatricky-amd-testbuild v%1</b> is available. You have v%2.")
-                    .arg(update.version)
-                    .arg(current_version));
-    box.setInformativeText(
+    QDialog dialog{parent_widget};
+    dialog.setWindowTitle(tr("Update available"));
+    dialog.resize(640, 520);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* heading = new QLabel(tr("<b>chuppatricky-amd-testbuild v%1</b> is available. You have v%2.")
+                                   .arg(update.version)
+                                   .arg(current_version));
+    layout->addWidget(heading);
+    layout->addWidget(new QLabel(tr("What's new:")));
+    auto* changelog = new QTextBrowser();
+    changelog->setOpenExternalLinks(true);
+    changelog->setMarkdown(update.notes);
+    layout->addWidget(changelog, 1);
+    auto* how = new QLabel(
         IsWindows ? tr("Updating downloads it (%1 MiB), unpacks it into its own folder next to "
                        "this one and starts it. Your settings, saves and shaders carry over; "
                        "this version's folder stays where it is.")
@@ -172,17 +200,17 @@ void TestbuildUpdater::Ask() {
                        "it. Your settings, saves and shaders carry over; this AppImage stays "
                        "where it is.")
                         .arg(MiB(update.asset_size)));
-    if (!update.notes.isEmpty()) {
-        box.setDetailedText(update.notes);
-    }
+    how->setWordWrap(true);
+    layout->addWidget(how);
+    auto* buttons = new QDialogButtonBox();
     QPushButton* update_button =
-        box.addButton(tr("Update to v%1").arg(update.version), QMessageBox::AcceptRole);
-    QPushButton* stay_button =
-        box.addButton(tr("Stay on v%1").arg(current_version), QMessageBox::RejectRole);
-    box.setDefaultButton(update_button);
-    box.setEscapeButton(stay_button);
-    box.exec();
-    if (box.clickedButton() != update_button) {
+        buttons->addButton(tr("Update to v%1").arg(update.version), QDialogButtonBox::AcceptRole);
+    buttons->addButton(tr("Stay on v%1").arg(current_version), QDialogButtonBox::RejectRole);
+    update_button->setDefault(true);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
         LOG_INFO(Frontend, "Update to v{} declined", update.version);
         return;
     }
