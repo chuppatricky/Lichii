@@ -128,6 +128,8 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 #ifdef ENABLE_UPDATE_CHECKER
 #include "frontend_common/update_checker.h"
+#else
+#include "yuzu/testbuild_updater.h"
 #endif
 
 // Common //
@@ -450,6 +452,12 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         update_watcher.connect(&update_watcher, &QFutureWatcher<QString>::finished, this,
                                &MainWindow::OnEmulatorUpdateAvailable);
         update_watcher.setFuture(update_future);
+    }
+#else
+    // chuppatricky-amd-testbuild: ask about a newer release on GitHub at every start.
+    if (UISettings::values.check_for_updates) {
+        testbuild_updater = new TestbuildUpdater(this, [this] { return emulation_running; });
+        testbuild_updater->Check();
     }
 #endif
 
@@ -2406,6 +2414,12 @@ void MainWindow::OnEmulationStopped() {
     } else if (!boot_in_progress) {
         game_list->SetScanEnabled(true);
         game_list->PopulateAsync(UISettings::values.game_dirs);
+#ifndef ENABLE_UPDATE_CHECKER
+        if (testbuild_updater) {
+            // An update found while the game ran is asked about now.
+            QTimer::singleShot(0, testbuild_updater, &TestbuildUpdater::ShowPending);
+        }
+#endif
     }
 }
 

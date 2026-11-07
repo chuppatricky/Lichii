@@ -504,6 +504,8 @@ private:
 #ifdef ENABLE_UPDATE_CHECKER
     QFuture<std::optional<Common::Net::Release>> update_future;
     QFutureWatcher<std::optional<Common::Net::Release>> update_watcher;
+#else
+    class TestbuildUpdater* testbuild_updater = nullptr;
 #endif
 
     MultiplayerState* multiplayer_state = nullptr;

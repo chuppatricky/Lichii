@@ -123,6 +123,7 @@ add_library(
     stream.h
     string_util.cpp
     string_util.h
+    testbuild_release.h
     swap.h
     thread.cpp
     thread.h
