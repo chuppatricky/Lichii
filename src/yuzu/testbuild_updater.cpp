@@ -215,6 +215,13 @@ void TestbuildUpdater::Ask() {
         return;
     }
 
+    if (IsWindows && QDir{QCoreApplication::applicationDirPath()}.exists(QStringLiteral("user"))) {
+        // A portable install keeps everything in "user" next to lichii.exe; the new folder
+        // wouldn't have it.
+        OpenPage(tr("This copy keeps its settings and saves in the \"user\" folder next to "
+                    "lichii.exe. Download the new version and move that folder into it."));
+        return;
+    }
     if (!IsWindows && qEnvironmentVariable("APPIMAGE").isEmpty()) {
         OpenPage(tr("This copy isn't running from an AppImage, so it can't update itself."));
         return;
@@ -365,7 +372,11 @@ void TestbuildUpdater::Install(const QString& downloaded) {
 void TestbuildUpdater::LaunchAndQuit(const QString& program) {
     LOG_INFO(Frontend, "Starting {} and closing this version", program.toStdString());
     // Start it once this instance has closed and saved its settings.
-    connect(qApp, &QCoreApplication::aboutToQuit, qApp, [program] {
+    // Linux looks for a portable "user" folder in the working directory: keep ours. Windows looks
+    // next to lichii.exe, so start it in its own folder.
+    const QString working_directory =
+        IsWindows ? QFileInfo{program}.absolutePath() : QDir::currentPath();
+    connect(qApp, &QCoreApplication::aboutToQuit, qApp, [program, working_directory] {
         QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
         // This AppImage's runtime and AppRun settings would point the new one at our libraries.
         for (const char* name : {"APPIMAGE", "APPDIR", "ARGV0", "OWD", "LD_LIBRARY_PATH",
@@ -375,7 +386,7 @@ void TestbuildUpdater::LaunchAndQuit(const QString& program) {
         }
         QProcess process;
         process.setProgram(program);
-        process.setWorkingDirectory(QFileInfo{program}.absolutePath());
+        process.setWorkingDirectory(working_directory);
         process.setProcessEnvironment(environment);
         process.startDetached();
     });
