@@ -1241,6 +1241,31 @@ void MainWindow::InitializeWidgets() {
             });
     statusBar()->insertPermanentWidget(0, dock_status_button);
 
+    // Setup frame rate lock button (right of the GPU accuracy button)
+    fps_lock_button = new QPushButton();
+    fps_lock_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
+    fps_lock_button->setCheckable(true);
+    fps_lock_button->setFocusPolicy(Qt::NoFocus);
+    fps_lock_button->setToolTip(tr("Frame rate lock: click to switch between 60 and 30 FPS"));
+    connect(fps_lock_button, &QPushButton::clicked, this, &MainWindow::OnToggleFpsLock);
+    UpdateFpsLockButton();
+    fps_lock_button->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(fps_lock_button, &QPushButton::customContextMenuRequested,
+            [this](const QPoint& menu_location) {
+                QMenu context_menu;
+                for (const u16 lock : {u16{60}, u16{30}}) {
+                    QAction* action = context_menu.addAction(tr("Lock to %1 FPS").arg(lock), [this, lock] {
+                        Settings::values.fps_lock.SetValue(lock);
+                        UpdateFpsLockButton();
+                    });
+                    action->setCheckable(true);
+                    action->setChecked(Settings::values.fps_lock.GetValue() == lock);
+                }
+                context_menu.exec(fps_lock_button->mapToGlobal(menu_location));
+                fps_lock_button->repaint();
+            });
+    statusBar()->insertPermanentWidget(0, fps_lock_button);
+
     // Setup GPU Accuracy button
     gpu_accuracy_button = new QPushButton();
     gpu_accuracy_button->setObjectName(QStringLiteral("GPUStatusBarButton"));
@@ -3872,6 +3897,11 @@ void MainWindow::OnToggleGpuAccuracy() {
     UpdateGPUAccuracyButton();
 }
 
+void MainWindow::OnToggleFpsLock() {
+    Settings::values.fps_lock.SetValue(Settings::values.fps_lock.GetValue() == 30 ? 60 : 30);
+    UpdateFpsLockButton();
+}
+
 void MainWindow::OnMute() {
     Settings::values.audio_muted = !Settings::values.audio_muted;
     UpdateVolumeUI();
@@ -4824,6 +4854,13 @@ void MainWindow::UpdateGPUAccuracyButton() {
     gpu_accuracy_button->setChecked(gpu_accuracy != Settings::GpuAccuracy::Low);
 }
 
+void MainWindow::UpdateFpsLockButton() {
+    const u16 lock = Settings::values.fps_lock.GetValue() == 30 ? 30 : 60;
+    fps_lock_button->setText(tr("%1 FPS").arg(lock));
+    // Always on: both are locks (the style dims unchecked buttons).
+    fps_lock_button->setChecked(true);
+}
+
 void MainWindow::UpdateDockedButton() {
     const auto console_mode = Settings::values.use_docked_mode.GetValue();
     dock_status_button->setChecked(Settings::IsDockedMode());
@@ -4905,6 +4942,7 @@ void MainWindow::UpdateStatusButtons() {
                                        Settings::RendererBackend::Vulkan);
     UpdateAPIText();
     UpdateGPUAccuracyButton();
+    UpdateFpsLockButton();
     UpdateDockedButton();
     UpdateFilterText();
     UpdateAAText();

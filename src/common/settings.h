@@ -646,6 +646,11 @@ struct Values {
                                                  true};
 #endif
 
+    // Frame rate lock (status bar button): presents at most 30 or 60 times a second. With
+    // Ocarina of Time's Dynamic FPS a frame always advances at least one 1/60 s step, so above
+    // 60 FPS the game would run fast; 30 trades smoothness for steadier frame times.
+    Setting<u16> fps_lock{linkage, 60, "fps_lock", Category::Renderer};
+
     // Renderer Hacks //
     SwitchableSetting<GpuClock> gpu_clock{linkage,
                                           GpuClock::Boost,

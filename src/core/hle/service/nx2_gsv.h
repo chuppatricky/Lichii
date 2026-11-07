@@ -2156,11 +2156,30 @@ private:
             fences.push_back({static_cast<s32>(fence_id), fence_value});
         }
         system.GPU().RequestComposite(std::move(layers), std::move(fences));
+        LockFrameRate();
         CaptureFrame();
         DumpRanges();
         system.SpeedLimiter().DoSpeedLimiting(system.CoreTiming().GetGlobalTimeUs());
         system.GetPerfStats().EndSystemFrame();
         system.GetPerfStats().BeginSystemFrame();
+    }
+
+    // The status bar's frame rate lock: returns no sooner than 1/30 or 1/60 s after the last
+    // present, which holds the game to that rate. When frames come slower than that, the cadence
+    // restarts from the late frame instead of letting the next ones catch up.
+    void LockFrameRate() {
+        const u16 lock = Settings::values.fps_lock.GetValue() == 30 ? 30 : 60;
+        const auto interval = std::chrono::nanoseconds{1'000'000'000 / lock};
+        const auto now = std::chrono::steady_clock::now();
+        if (m_next_present == std::chrono::steady_clock::time_point{} ||
+            now >= m_next_present + interval) {
+            m_next_present = now + interval;
+            return;
+        }
+        if (now < m_next_present) {
+            std::this_thread::sleep_until(m_next_present);
+        }
+        m_next_present += interval;
     }
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
@@ -2498,6 +2517,7 @@ private:
     std::shared_ptr<VsyncState> m_vsync = std::make_shared<VsyncState>();
     std::shared_ptr<Core::Timing::EventType> m_vsync_timer;
     u64 m_presents{};
+    std::chrono::steady_clock::time_point m_next_present{}; // frame rate lock
     u64 m_shown_layout{}; // image and crop size last logged
     std::shared_ptr<std::atomic<bool>> m_capture_pending = std::make_shared<std::atomic<bool>>(false);
 };
