@@ -4,6 +4,12 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <thread>
+#include <vector>
+#include "common/logging.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "core/frontend/emu_window.h"
@@ -129,7 +135,9 @@ PresentManager::PresentManager(const vk::Instance& instance_,
     , surface{surface_}
     , blit_supported{CanBlitToSwapchain(device.GetPhysical(), swapchain.GetImageViewFormat())}
     , storage_supported{CanStoreToFrame(device.GetPhysical(), swapchain.GetImageFormat())}
-    , use_present_thread{Settings::values.async_presentation.GetValue()}
+    // Frame generation spaces its frames from the present thread (the render thread can't wait).
+    , use_present_thread{Settings::values.async_presentation.GetValue() ||
+                         Settings::values.frame_gen.GetValue()}
 {
     SetImageCount();
 
@@ -345,6 +353,7 @@ void PresentManager::PresentThread(std::stop_token token) {
             // before the queue lock goes out of scope. This way the swapchain
             // lock in WaitPresent is guaranteed to occur after here.
             void(std::exchange(lock, std::unique_lock{swapchain_mutex}));
+            WaitUntilPresentTime(frame);
             CopyToSwapchain(frame);
 
             // Free the frame for reuse
@@ -396,7 +405,28 @@ void PresentManager::DiscardFrame(Frame* frame) {
     void(device.GetGraphicsQueue().Submit(submit_info, *frame->present_done));
 }
 
+void PresentManager::WaitUntilPresentTime(Frame* frame) {
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point at = std::exchange(frame->present_at, Clock::time_point{});
+    if (at == Clock::time_point{}) {
+        return;
+    }
+    // Sleep to 1.5 ms before (Windows sleeps in coarse steps), then yield up to it. A time more
+    // than 100 ms away is stale and ignored.
+    const auto now = Clock::now();
+    if (at <= now || at - now > std::chrono::milliseconds{100}) {
+        return;
+    }
+    if (at - now > std::chrono::microseconds{1500}) {
+        std::this_thread::sleep_until(at - std::chrono::microseconds{1500});
+    }
+    while (Clock::now() < at) {
+        std::this_thread::yield();
+    }
+}
+
 void PresentManager::CopyToSwapchain(Frame* frame) {
+    LogPresentTiming();
     bool requires_recreation = false;
 
     for (u32 attempt = 0; attempt < MAX_PRESENT_ATTEMPTS; ++attempt) {
@@ -589,6 +619,54 @@ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
 
     // Present
     swapchain.Present(render_semaphore);
+}
+
+
+void PresentManager::LogPresentTiming() {
+    // EDEN_NX2_PRESENT_TIMING=1: once a second, how evenly frames reached the swapchain (the
+    // intervals between presents), to tell paced frame generation from bunched frames.
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_PRESENT_TIMING");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (!enabled) {
+        return;
+    }
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point last{};
+    static Clock::time_point window{};
+    static std::vector<double> intervals;
+    const auto now = Clock::now();
+    if (last != Clock::time_point{}) {
+        intervals.push_back(std::chrono::duration<double, std::milli>(now - last).count());
+    }
+    last = now;
+    if (window == Clock::time_point{}) {
+        window = now;
+    }
+    if (now - window < std::chrono::seconds{1} || intervals.empty()) {
+        return;
+    }
+    double sum = 0;
+    double low = intervals.front();
+    double high = intervals.front();
+    for (const double value : intervals) {
+        sum += value;
+        low = std::min(low, value);
+        high = std::max(high, value);
+    }
+    const double mean = sum / static_cast<double>(intervals.size());
+    double variance = 0;
+    for (const double value : intervals) {
+        variance += (value - mean) * (value - mean);
+    }
+    const double deviation = std::sqrt(variance / static_cast<double>(intervals.size()));
+    LOG_INFO(Render_Vulkan,
+             "Present timing: {} presents, interval mean {:.2f} ms, deviation {:.2f} ms, min "
+             "{:.2f} ms, max {:.2f} ms",
+             intervals.size(), mean, deviation, low, high);
+    intervals.clear();
+    window = now;
 }
 
 } // namespace Vulkan

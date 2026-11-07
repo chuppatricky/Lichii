@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -256,14 +257,35 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
                       GuestExtent(framebuffers));
 
     const size_t generated_frames = frame_gen.GeneratedFrameCount();
+    // The generated frames lie between the previous game frame and this one: shown at once with
+    // it, a FIFO swapchain put them on consecutive refreshes and then nothing until the next
+    // game frame (7 ms, then 19 ms at 144 Hz and 38 FPS), so motion was no smoother. The present
+    // thread spreads them, and this frame, evenly over one game frame's time instead.
+    // EDEN_NX2_FG_PACING=0 presents them at once, as before.
+    static const bool pacing = [] {
+        const char* value = std::getenv("EDEN_NX2_FG_PACING");
+        return value == nullptr || value[0] != '0';
+    }();
+    const auto pacing_start = std::chrono::steady_clock::now();
+    const f32 frame_interval = pacing ? frame_gen.FrameInterval() : 0.0f;
+    const auto spacing = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<f32>(generated_frames > 0 && frame_interval > 0.0f
+                                       ? frame_interval / static_cast<f32>(generated_frames + 1)
+                                       : 0.0f));
     for (size_t generation = 0; generation < generated_frames; ++generation) {
         Frame* generated = present_manager.GetRenderFrame();
         blit_swapchain.PrepareFrame(device, generated, render_window.GetFramebufferLayout());
         frame_gen.GenerateInto(device, generated, generation);
         scheduler.Flush(*generated->render_ready);
+        generated->present_at = spacing.count() > 0
+                                    ? pacing_start + spacing * static_cast<int>(generation)
+                                    : std::chrono::steady_clock::time_point{};
         present_manager.Present(generated);
         presented_frames.fetch_add(1, std::memory_order_relaxed);
     }
+    frame->present_at = spacing.count() > 0
+                            ? pacing_start + spacing * static_cast<int>(generated_frames)
+                            : std::chrono::steady_clock::time_point{};
 #endif
 
     if (trace) {

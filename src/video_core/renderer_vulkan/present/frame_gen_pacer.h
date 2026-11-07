@@ -21,6 +21,11 @@ public:
 
     void Reset();
 
+    /// The smoothed time between game frames, in seconds (0 until measured).
+    [[nodiscard]] f32 FrameInterval() const {
+        return smoothed_interval;
+    }
+
 private:
     using Clock = std::chrono::steady_clock;
 

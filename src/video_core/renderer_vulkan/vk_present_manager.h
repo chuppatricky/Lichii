@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <boost/container/deque.hpp>
@@ -38,6 +39,8 @@ struct Frame {
     vk::Semaphore render_ready;
     vk::Fence present_done;
     bool storage_capable{};
+    /// When the present thread shows this frame (frame generation spaces its frames); unset: now.
+    std::chrono::steady_clock::time_point present_at{};
 };
 
 class PresentManager {
@@ -76,6 +79,8 @@ private:
     void PresentThread(std::stop_token token);
 
     void CopyToSwapchain(Frame* frame);
+    void WaitUntilPresentTime(Frame* frame);
+    void LogPresentTiming();
 
     void CopyToSwapchainImpl(Frame* frame);
 
