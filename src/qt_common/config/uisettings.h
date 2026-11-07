@@ -139,6 +139,8 @@ struct Values {
                                       true};
 
     Setting<bool> check_for_updates{linkage, true, "check_for_updates", Category::UiGeneral};
+    // The testbuild version whose "What's new" window was shown (once per version).
+    Setting<std::string> whats_new_shown{linkage, {}, "whats_new_shown", Category::UiGeneral};
 
     // Linux/MinGW may support (requires libdl support)
     SwitchableSetting<bool> enable_gamemode{linkage,

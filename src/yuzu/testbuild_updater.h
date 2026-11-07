@@ -34,8 +34,12 @@ public:
     /// Starts the check (once per launch).
     void Check();
 
-    /// Asks about an update found while a game was running.
+    /// Asks about an update found while a game was running, or shows "What's new" if a game was
+    /// running at startup.
     void ShowPending();
+
+    /// On the first start of this testbuild version, shows what's new in it (once).
+    void ShowWhatsNewOnce();
 
 private:
     struct Update {
@@ -65,6 +69,8 @@ private:
     u32 current_version{};
     std::optional<Update> pending;
     bool asked{};
+    bool whats_new_pending{};
+    bool showing_whats_new{};
 
     QNetworkReply* download{};
     QSaveFile* download_file{};

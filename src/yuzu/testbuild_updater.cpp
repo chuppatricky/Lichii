@@ -36,6 +36,8 @@
 #include "common/logging.h"
 #include "common/scm_rev.h"
 #include "common/testbuild_release.h"
+#include "qt_common/config/uisettings.h"
+#include "yuzu/testbuild_whats_new.h"
 
 namespace {
 
@@ -161,15 +163,52 @@ void TestbuildUpdater::OnReleases(QNetworkReply* reply) {
             body.trimmed().isEmpty() ? tr("No notes for this version.") : body.trimmed());
     }
     pending = std::move(best);
-    if (!is_busy()) {
+    if (!is_busy() && !showing_whats_new) {
         Ask();
     }
 }
 
 void TestbuildUpdater::ShowPending() {
-    if (pending && !asked && !is_busy()) {
+    if (whats_new_pending) {
+        ShowWhatsNewOnce();
+    }
+    if (pending && !asked && !is_busy() && !showing_whats_new) {
         Ask();
     }
+}
+
+void TestbuildUpdater::ShowWhatsNewOnce() {
+    const std::string version{Common::g_build_version};
+    if (!TestbuildRelease::Version(version) ||
+        UISettings::values.whats_new_shown.GetValue() == version) {
+        whats_new_pending = false;
+        return;
+    }
+    if (is_busy()) {
+        whats_new_pending = true;
+        return;
+    }
+    whats_new_pending = false;
+    UISettings::values.whats_new_shown.SetValue(version);
+
+    QDialog dialog{parent_widget};
+    dialog.setWindowTitle(tr("What's new"));
+    dialog.resize(640, 520);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(tr("<b>What's new in %1</b>").arg(QString::fromStdString(version))));
+    auto* text = new QTextBrowser();
+    text->setOpenExternalLinks(true);
+    text->setMarkdown(QString::fromUtf8(TestbuildWhatsNew));
+    layout->addWidget(text, 1);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    layout->addWidget(buttons);
+    showing_whats_new = true;
+    dialog.exec();
+    showing_whats_new = false;
+    LOG_INFO(Frontend, "Showed what's new in {}", version);
+    // An update found while this was open is asked about now.
+    ShowPending();
 }
 
 void TestbuildUpdater::Ask() {

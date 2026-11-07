@@ -454,9 +454,11 @@ MainWindow::MainWindow(bool has_broken_vulkan)
         update_watcher.setFuture(update_future);
     }
 #else
-    // chuppatricky-amd-testbuild: ask about a newer release on GitHub at every start.
+    // chuppatricky-amd-testbuild: what's new on this version's first start, and a newer release
+    // on GitHub asked about at every start.
+    testbuild_updater = new TestbuildUpdater(this, [this] { return emulation_running; });
+    QTimer::singleShot(0, testbuild_updater, &TestbuildUpdater::ShowWhatsNewOnce);
     if (UISettings::values.check_for_updates) {
-        testbuild_updater = new TestbuildUpdater(this, [this] { return emulation_running; });
         testbuild_updater->Check();
     }
 #endif
