@@ -74,8 +74,9 @@ constexpr QColor StageColor{0xB5, 0xB8, 0xBF};
 constexpr QColor TrackColor{0x26, 0x28, 0x2D};
 constexpr QColor DetailColor{0x6E, 0x72, 0x7B};
 constexpr QColor MarkColor{0x2A, 0x2C, 0x31};
-constexpr QColor MarkLeftColor{0x16, 0xC6, 0xA8};
-constexpr QColor MarkRightColor{0x2B, 0x6C, 0xFF};
+// The mark's halves fill like a pair of Joy-Con: neon blue on the left, neon red on the right.
+constexpr QColor MarkLeftColor{0x0A, 0xB9, 0xE6};
+constexpr QColor MarkRightColor{0xFF, 0x3C, 0x28};
 
 // The bar is a rainbow that drifts slowly while loading: a full turn of the wheel every
 // HueCycleMs, with two thirds of the wheel spread from the bar's left end to its right, so the fill
